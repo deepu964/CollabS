@@ -854,3 +854,100 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+/* --------------------------------------------------------------------------
+   Cloud Status & Sync Elements
+   -------------------------------------------------------------------------- */
+.cloud-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: default;
+  transition: all var(--transition-fast);
+}
+
+.cloud-status-chip.synced {
+  background: rgba(52, 199, 89, 0.12);
+  color: #34c759;
+  border: 1px solid rgba(52, 199, 89, 0.25);
+}
+
+.cloud-status-chip.synced .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #34c759;
+  box-shadow: 0 0 8px rgba(52, 199, 89, 0.6);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+.cloud-status-chip.local {
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+}
+
+.cloud-status-chip.local .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--text-tertiary);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+.spin-animation {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.upload-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.upload-subheading {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.cloud-notice-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 20px 0 20px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 149, 0, 0.08);
+  border: 1px solid rgba(255, 149, 0, 0.22);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cloud-notice-banner .notice-icon {
+  color: #ff9500;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.cloud-notice-banner code {
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+

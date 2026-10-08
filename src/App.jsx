@@ -4,7 +4,13 @@ import MinimalCard from './components/MinimalCard';
 import FullscreenLightbox from './components/FullscreenLightbox';
 import UploadModal from './components/UploadModal';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
-import { Plus, Sun, Moon, Layers, Building2, ShieldCheck, Smartphone } from 'lucide-react';
+import { Plus, Sun, Moon, Building2, ShieldCheck, Smartphone, Cloud, Radio } from 'lucide-react';
+import {
+  subscribeToReferences,
+  saveReferenceToFirestore,
+  isFirebaseConfigured
+} from './services/firebase';
+import { isCloudinaryConfigured } from './services/cloudinary';
 
 const STORAGE_KEY_REFS = 'collabs_minimal_refs_v1';
 const STORAGE_KEY_THEME = 'collabs_theme_v1';
@@ -26,7 +32,7 @@ export default function App() {
   // Active Category: default to 'b2b', or 'driver', or 'admin'
   const [activeCategory, setActiveCategory] = useState('b2b');
 
-  // References state (persisted)
+  // References state (cached in localStorage, synced with Firestore)
   const [references, setReferences] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_REFS);
@@ -46,6 +52,29 @@ export default function App() {
   // Upload Modal State
   const [isUploadOpen, setIsUploadOpen] = useState(false);
 
+  const firebaseReady = isFirebaseConfigured();
+  const cloudinaryReady = isCloudinaryConfigured();
+  const isCloudSynced = firebaseReady && cloudinaryReady;
+
+  // Real-time synchronization with Firestore
+  useEffect(() => {
+    if (!firebaseReady) return;
+
+    const unsubscribe = subscribeToReferences((remoteRefs) => {
+      if (remoteRefs && remoteRefs.length > 0) {
+        const remoteIds = new Set(remoteRefs.map((r) => r.id));
+        // Keep initial dummy references that aren't overwritten
+        const merged = [
+          ...remoteRefs,
+          ...INITIAL_REFERENCES.filter((r) => !remoteIds.has(r.id))
+        ];
+        setReferences(merged);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [firebaseReady]);
+
   // Synchronize Dark Theme class
   useEffect(() => {
     if (darkMode) {
@@ -56,7 +85,7 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(darkMode));
   }, [darkMode]);
 
-  // Persist references to localStorage
+  // Cache references to localStorage as offline fallback
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_REFS, JSON.stringify(references));
@@ -67,16 +96,28 @@ export default function App() {
 
   // Filter references for the active category
   const activeReferences = useMemo(() => {
-    return references.filter(r => r.category === activeCategory);
+    return references.filter((r) => r.category === activeCategory);
   }, [references, activeCategory]);
 
-  const activeCategoryObj = CATEGORIES.find(c => c.id === activeCategory) || CATEGORIES[0];
-  const ActiveIcon = ICON_MAP[activeCategory] || Building2;
+  const activeCategoryObj = CATEGORIES.find((c) => c.id === activeCategory) || CATEGORIES[0];
 
-  // Add new reference handler
-  const handleAddReference = (newRef) => {
-    setReferences((prev) => [newRef, ...prev]);
+  // Add new reference handler (updates local state & Firestore)
+  const handleAddReference = async (newRef) => {
+    const tempId = newRef.id || `ref-${Date.now()}`;
+    const optimisticRef = { ...newRef, id: tempId };
+
+    // Immediate UI update
+    setReferences((prev) => [optimisticRef, ...prev]);
     setActiveCategory(newRef.category);
+
+    // Save to Firebase Firestore for shared team viewing
+    if (firebaseReady) {
+      try {
+        await saveReferenceToFirestore(newRef);
+      } catch (err) {
+        console.error('Failed to sync reference to Firestore:', err);
+      }
+    }
   };
 
   return (
@@ -95,7 +136,7 @@ export default function App() {
             {CATEGORIES.map((cat) => {
               const Icon = ICON_MAP[cat.id] || Building2;
               const isActive = activeCategory === cat.id;
-              const count = references.filter(r => r.category === cat.id).length;
+              const count = references.filter((r) => r.category === cat.id).length;
 
               return (
                 <button
@@ -114,11 +155,24 @@ export default function App() {
 
           {/* Right Actions */}
           <div className="minimal-header-actions">
+            {/* Cloud Status Indicator */}
+            <div
+              className={`cloud-status-chip ${isCloudSynced ? 'synced' : 'local'}`}
+              title={
+                isCloudSynced
+                  ? 'Cloud Sync Active (Cloudinary + Firebase)'
+                  : 'Local Mode: Add Cloudinary & Firebase keys in .env / Vercel to share uploads with your team'
+              }
+            >
+              <span className="status-dot" />
+              <span className="status-label">{isCloudSynced ? 'Live Sync' : 'Local Mode'}</span>
+            </div>
+
             <button
               type="button"
               onClick={() => setDarkMode(!darkMode)}
               className="action-icon-btn"
-              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               aria-label="Toggle theme"
             >
               {darkMode ? <Sun size={15} /> : <Moon size={15} />}

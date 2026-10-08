@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, UploadCloud, Image as ImageIcon, Link2, Sparkles, Check } from 'lucide-react';
+import { X, UploadCloud, Link2, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { uploadImageToCloudinary, isCloudinaryConfigured } from '../services/cloudinary';
 
 const SAMPLE_PRESETS = [
   {
@@ -41,10 +42,16 @@ export default function UploadModal({
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState(defaultCategory);
   const [imageUrl, setImageUrl] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
+
+  const cloudinaryReady = isCloudinaryConfigured();
 
   useEffect(() => {
     setCategory(defaultCategory === 'all' ? 'b2b' : defaultCategory);
@@ -52,11 +59,20 @@ export default function UploadModal({
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && isOpen) onClose();
+      if (e.key === 'Escape' && isOpen && !isSubmitting) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, isSubmitting]);
+
+  // Clean up object URLs
+  useEffect(() => {
+    return () => {
+      if (previewUrl && previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
 
   if (!isOpen) return null;
 
@@ -65,15 +81,20 @@ export default function UploadModal({
       setError('Please upload a valid image file');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setImageUrl(e.target.result);
-      setError('');
-      if (!title) {
-        setTitle(file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " "));
-      }
-    };
-    reader.readAsDataURL(file);
+
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    setSelectedFile(file);
+    setPreviewUrl(objectUrl);
+    setImageUrl('');
+    setError('');
+
+    if (!title) {
+      setTitle(file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '));
+    }
   };
 
   const handleDrop = (e) => {
@@ -85,43 +106,105 @@ export default function UploadModal({
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleClearImage = () => {
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    setSelectedFile(null);
+    setPreviewUrl('');
+    setImageUrl('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!imageUrl.trim()) {
-      setError('Please provide an image URL or choose a file');
+    if (!selectedFile && !imageUrl.trim()) {
+      setError('Please provide an image file or enter an image URL');
       return;
     }
 
-    const finalTitle = title.trim() || `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
-
-    onAddReference({
-      id: `ref-${Date.now()}`,
-      title: finalTitle,
-      category,
-      imageUrl: imageUrl.trim(),
-      sourceUrl: sourceUrl.trim() || '',
-      deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
-      createdAt: new Date().toISOString()
-    });
-
-    // Reset and close
-    setTitle('');
-    setImageUrl('');
-    setSourceUrl('');
+    setIsSubmitting(true);
     setError('');
-    onClose();
+
+    try {
+      let finalImageUrl = imageUrl.trim();
+
+      // If user uploaded a local image file
+      if (selectedFile) {
+        if (cloudinaryReady) {
+          setStatusText('Uploading to Cloudinary...');
+          const uploadRes = await uploadImageToCloudinary(selectedFile);
+          finalImageUrl = uploadRes.url;
+        } else {
+          // Fallback to base64 if Cloudinary is not configured yet
+          setStatusText('Processing local image...');
+          finalImageUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve(event.target.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(selectedFile);
+          });
+        }
+      }
+
+      setStatusText('Saving reference...');
+      const finalTitle =
+        title.trim() ||
+        `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
+
+      await onAddReference({
+        title: finalTitle,
+        category,
+        imageUrl: finalImageUrl,
+        sourceUrl: sourceUrl.trim() || '',
+        deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
+        createdAt: new Date().toISOString()
+      });
+
+      // Reset and close
+      handleClearImage();
+      setTitle('');
+      setSourceUrl('');
+      setError('');
+      onClose();
+    } catch (err) {
+      console.error('Submit error:', err);
+      setError(err.message || 'Failed to upload image. Please verify your Cloudinary settings.');
+    } finally {
+      setIsSubmitting(false);
+      setStatusText('');
+    }
   };
 
   return (
-    <div className="upload-overlay" onClick={onClose} role="dialog" aria-modal="true">
+    <div className="upload-overlay" onClick={isSubmitting ? undefined : onClose} role="dialog" aria-modal="true">
       <div className="upload-sheet" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="upload-header">
-          <h2 className="upload-heading">Add UI Reference</h2>
-          <button type="button" onClick={onClose} className="upload-close-btn" aria-label="Close">
+          <div className="upload-header-text">
+            <h2 className="upload-heading">Add UI Reference</h2>
+            <span className="upload-subheading">Share design screens across your team</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSubmitting}
+            className="upload-close-btn"
+            aria-label="Close"
+          >
             <X size={15} />
           </button>
         </div>
+
+        {/* Configuration Notice if Cloudinary is not set up */}
+        {!cloudinaryReady && (
+          <div className="cloud-notice-banner">
+            <AlertCircle size={14} className="notice-icon" />
+            <div className="notice-text">
+              <strong>Cloudinary not configured:</strong> Images will only be stored locally in this browser. Configure Cloudinary in <code>.env</code> / Vercel to make uploads visible to everyone.
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="upload-form">
           {/* Pillar Selector */}
@@ -132,6 +215,7 @@ export default function UploadModal({
                 type="button"
                 className={`pillar-tab ${category === 'b2b' ? 'active' : ''}`}
                 onClick={() => setCategory('b2b')}
+                disabled={isSubmitting}
               >
                 B2B Portal
               </button>
@@ -139,6 +223,7 @@ export default function UploadModal({
                 type="button"
                 className={`pillar-tab ${category === 'admin' ? 'active' : ''}`}
                 onClick={() => setCategory('admin')}
+                disabled={isSubmitting}
               >
                 Admin Console
               </button>
@@ -146,6 +231,7 @@ export default function UploadModal({
                 type="button"
                 className={`pillar-tab ${category === 'driver' ? 'active' : ''}`}
                 onClick={() => setCategory('driver')}
+                disabled={isSubmitting}
               >
                 Driver App
               </button>
@@ -155,13 +241,14 @@ export default function UploadModal({
           {/* Image Input Area (File Drop or URL) */}
           <div className="upload-field">
             <label className="upload-label">UI Screenshot</label>
-            
-            {imageUrl ? (
+
+            {previewUrl || imageUrl ? (
               <div className="image-preview-box">
-                <img src={imageUrl} alt="Preview" className="preview-img" />
+                <img src={previewUrl || imageUrl} alt="Preview" className="preview-img" />
                 <button
                   type="button"
-                  onClick={() => setImageUrl('')}
+                  onClick={handleClearImage}
+                  disabled={isSubmitting}
                   className="remove-img-btn"
                   title="Remove image"
                 >
@@ -172,9 +259,17 @@ export default function UploadModal({
             ) : (
               <div
                 className={`dropzone ${dragActive ? 'active' : ''}`}
-                onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
-                onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
-                onDragOver={(e) => { e.preventDefault(); }}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  setDragActive(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  setDragActive(false);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                }}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
               >
@@ -184,10 +279,15 @@ export default function UploadModal({
                   accept="image/*"
                   style={{ display: 'none' }}
                   onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
+                  disabled={isSubmitting}
                 />
                 <UploadCloud size={24} className="dropzone-icon" />
                 <p className="dropzone-text">Click to choose image or drag & drop</p>
-                <span className="dropzone-sub">PNG, JPG, WebP supported</span>
+                <span className="dropzone-sub">
+                  {cloudinaryReady
+                    ? 'Uploaded directly to Cloudinary CDN'
+                    : 'PNG, JPG, WebP supported'}
+                </span>
               </div>
             )}
 
@@ -196,9 +296,11 @@ export default function UploadModal({
               <Link2 size={13} className="url-icon" />
               <input
                 type="url"
-                placeholder="Or paste image URL from web..."
-                value={imageUrl.startsWith('data:') ? '' : imageUrl}
+                placeholder="Or paste public image URL..."
+                value={previewUrl ? '' : imageUrl}
+                disabled={isSubmitting}
                 onChange={(e) => {
+                  if (previewUrl) handleClearImage();
                   setImageUrl(e.target.value);
                   setError('');
                 }}
@@ -214,8 +316,10 @@ export default function UploadModal({
                   <button
                     key={i}
                     type="button"
+                    disabled={isSubmitting}
                     className="sample-chip"
                     onClick={() => {
+                      handleClearImage();
                       setImageUrl(p.url);
                       setTitle(p.name);
                       setCategory(p.category);
@@ -239,6 +343,7 @@ export default function UploadModal({
               type="text"
               placeholder="e.g. Live Route Navigation Screen"
               value={title}
+              disabled={isSubmitting}
               onChange={(e) => setTitle(e.target.value)}
               className="upload-input"
             />
@@ -251,6 +356,7 @@ export default function UploadModal({
               type="url"
               placeholder="https://..."
               value={sourceUrl}
+              disabled={isSubmitting}
               onChange={(e) => setSourceUrl(e.target.value)}
               className="upload-input"
             />
@@ -258,11 +364,27 @@ export default function UploadModal({
 
           {/* Footer Submit */}
           <div className="upload-footer">
-            <button type="button" onClick={onClose} className="upload-btn cancel">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="upload-btn cancel"
+            >
               Cancel
             </button>
-            <button type="submit" className="upload-btn primary">
-              Add Reference
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="upload-btn primary"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 size={14} className="spin-animation" />
+                  <span>{statusText || 'Uploading...'}</span>
+                </>
+              ) : (
+                <span>Add Reference</span>
+              )}
             </button>
           </div>
         </form>
