@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize } from 'lucide-react';
+import { X, ExternalLink, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Download, Trash2 } from 'lucide-react';
 
 export default function FullscreenLightbox({
   reference,
   allCategoryReferences,
   onClose,
-  onSelectReference
+  onSelectReference,
+  onDelete
 }) {
   const [isZoomed, setIsZoomed] = useState(false);
+
+  const isVideo = reference.resourceType === 'video' ||
+    Boolean(reference.imageUrl && reference.imageUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i));
 
   // Keyboard navigation: Escape to close, Arrow keys to navigate
   useEffect(() => {
@@ -43,7 +47,22 @@ export default function FullscreenLightbox({
     setIsZoomed(false);
   };
 
-  const domain = reference.sourceUrl ? new URL(reference.sourceUrl).hostname.replace('www.', '') : '';
+  const domain = reference.sourceUrl ? (() => {
+    try {
+      return new URL(reference.sourceUrl).hostname.replace('www.', '');
+    } catch {
+      return '';
+    }
+  })() : '';
+
+  const handleDelete = () => {
+    if (window.confirm(`Delete "${reference.title}"?`)) {
+      if (onDelete) {
+        onDelete(reference.id);
+      }
+      onClose();
+    }
+  };
 
   return (
     <div className="lightbox-overlay" onClick={onClose} role="dialog" aria-modal="true">
@@ -51,11 +70,13 @@ export default function FullscreenLightbox({
       <div className="lightbox-top-bar" onClick={(e) => e.stopPropagation()}>
         <div className="lightbox-meta">
           <h2 className="lightbox-title">{reference.title}</h2>
-          <span className="lightbox-counter">{currentIndex + 1} of {total}</span>
+          {total > 0 && currentIndex >= 0 && (
+            <span className="lightbox-counter">{currentIndex + 1} of {total}</span>
+          )}
         </div>
 
         <div className="lightbox-actions">
-          {reference.sourceUrl && (
+          {domain && (
             <a
               href={reference.sourceUrl}
               target="_blank"
@@ -68,15 +89,40 @@ export default function FullscreenLightbox({
             </a>
           )}
 
-          <button
-            type="button"
-            onClick={() => setIsZoomed(!isZoomed)}
+          {!isVideo && (
+            <button
+              type="button"
+              onClick={() => setIsZoomed(!isZoomed)}
+              className="lightbox-btn"
+              title={isZoomed ? "Fit to screen" : "Actual size zoom"}
+            >
+              {isZoomed ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
+              <span>{isZoomed ? "Fit" : "100%"}</span>
+            </button>
+          )}
+
+          <a
+            href={reference.imageUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            download
             className="lightbox-btn"
-            title={isZoomed ? "Fit to screen" : "Actual size zoom"}
+            title="Open / Download original asset"
           >
-            {isZoomed ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
-            <span>{isZoomed ? "Fit" : "100%"}</span>
-          </button>
+            <Download size={14} />
+          </a>
+
+          {onDelete && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="lightbox-btn delete-btn"
+              title="Delete reference"
+            >
+              <Trash2 size={14} />
+              <span>Delete</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -101,7 +147,7 @@ export default function FullscreenLightbox({
             }}
             className="lightbox-nav-btn prev"
             aria-label="Previous reference"
-            title="Previous reference (←)"
+            title="Previous (←)"
           >
             <ChevronLeft size={22} />
           </button>
@@ -114,33 +160,44 @@ export default function FullscreenLightbox({
             }}
             className="lightbox-nav-btn next"
             aria-label="Next reference"
-            title="Next reference (→)"
+            title="Next (→)"
           >
             <ChevronRight size={22} />
           </button>
         </>
       )}
 
-      {/* Full-Viewport Image Container */}
+      {/* Full-Viewport Media Container */}
       <div 
         className={`lightbox-canvas ${isZoomed ? 'zoomed' : ''}`}
         onClick={(e) => {
-          // If clicked directly on canvas background, close
           if (e.target === e.currentTarget) {
             onClose();
           }
         }}
       >
-        <img
-          src={reference.imageUrl}
-          alt={reference.title}
-          className="lightbox-full-img"
-          onClick={(e) => {
-            e.stopPropagation();
-            setIsZoomed(!isZoomed);
-          }}
-          title="Click to toggle zoom"
-        />
+        {isVideo ? (
+          <video
+            src={reference.imageUrl}
+            controls
+            autoPlay
+            loop
+            playsInline
+            className="lightbox-full-video"
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <img
+            src={reference.imageUrl}
+            alt={reference.title}
+            className="lightbox-full-img"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsZoomed(!isZoomed);
+            }}
+            title="Click to toggle zoom"
+          />
+        )}
       </div>
     </div>
   );

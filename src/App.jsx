@@ -1,19 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import './App.css';
+import CategoryCardsOverview from './components/CategoryCardsOverview';
+import DirectUploadCard from './components/DirectUploadCard';
 import MinimalCard from './components/MinimalCard';
 import FullscreenLightbox from './components/FullscreenLightbox';
-import UploadModal from './components/UploadModal';
+import WorkflowCanvas from './components/WorkflowCanvas';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
-import { Plus, Sun, Moon, Building2, ShieldCheck, Smartphone, Cloud, Radio } from 'lucide-react';
+import {
+  Sun,
+  Moon,
+  Building2,
+  ShieldCheck,
+  Smartphone,
+  Cloud,
+  ChevronLeft,
+  RefreshCw,
+  Layers,
+  LayoutGrid,
+  Share2,
+  CheckCircle2
+} from 'lucide-react';
 import {
   subscribeToReferences,
   saveReferenceToFirestore,
+  deleteReferenceFromFirestore,
   isFirebaseConfigured
 } from './services/firebase';
-import { isCloudinaryConfigured } from './services/cloudinary';
+import {
+  isCloudinaryConfigured,
+  fetchCloudinaryCategoryMedia
+} from './services/cloudinary';
 
-const STORAGE_KEY_REFS = 'collabs_minimal_refs_v1';
-const STORAGE_KEY_THEME = 'collabs_theme_v1';
+const STORAGE_KEY_REFS = 'collabs_minimal_refs_v2';
+const STORAGE_KEY_THEME = 'collabs_theme_v2';
 
 const ICON_MAP = {
   b2b: Building2,
@@ -21,61 +40,156 @@ const ICON_MAP = {
   driver: Smartphone
 };
 
+const DUMMY_IDS = new Set([
+  'ref-101', 'ref-102', 'ref-103',
+  'ref-201', 'ref-202', 'ref-203',
+  'ref-301', 'ref-302', 'ref-303'
+]);
+
 export default function App() {
-  // Theme state
+  // Theme state: dark / light
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_THEME);
     if (saved !== null) return JSON.parse(saved);
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
 
-  // Active Category: default to 'b2b', or 'driver', or 'admin'
-  const [activeCategory, setActiveCategory] = useState('b2b');
+  // Active Category: null = 3 Cards Main Page; 'b2b' | 'admin' | 'driver' = Category Gallery
+  const [activeCategory, setActiveCategory] = useState(null);
 
-  // References state (cached in localStorage, synced with Firestore)
+  // Category View Mode: 'gallery' | 'workflow'
+  const [categoryMode, setCategoryMode] = useState('gallery');
+
+  // References state (cached in localStorage, synced via Cloudinary & Firestore)
   const [references, setReferences] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_REFS);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          // Filter out dummy items
+          return parsed.filter((item) => !DUMMY_IDS.has(item.id));
+        }
       }
     } catch (e) {
-      console.error('Failed to load references', e);
+      console.error('Failed to load cached references', e);
     }
     return INITIAL_REFERENCES;
   });
 
-  // Full-viewport Lightbox State
+  // Lightbox State
   const [selectedReference, setSelectedReference] = useState(null);
 
-  // Upload Modal State
-  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  // Sync state
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdatedText, setLastUpdatedText] = useState('just now');
 
   const firebaseReady = isFirebaseConfigured();
   const cloudinaryReady = isCloudinaryConfigured();
-  const isCloudSynced = firebaseReady && cloudinaryReady;
 
-  // Real-time synchronization with Firestore
+  // Multi-tab sync via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel('collabs_realtime_bus');
+
+    channel.onmessage = (event) => {
+      if (event.data?.type === 'ADD_REFERENCE') {
+        const incoming = event.data.reference;
+        setReferences((prev) => {
+          if (prev.some((r) => r.id === incoming.id)) return prev;
+          return [incoming, ...prev];
+        });
+        setLastUpdatedText('just now');
+      } else if (event.data?.type === 'DELETE_REFERENCE') {
+        const targetId = event.data.id;
+        setReferences((prev) => prev.filter((r) => r.id !== targetId));
+      }
+    };
+
+    return () => {
+      channel.close();
+    };
+  }, []);
+
+  // Sync from Cloudinary tag lists & Firestore
+  const syncLatestMedia = useCallback(async () => {
+    setIsRefreshing(true);
+    let foundNew = false;
+
+    // 1. Check Cloudinary tag lists if enabled
+    if (cloudinaryReady) {
+      try {
+        for (const cat of CATEGORIES) {
+          const res = await fetchCloudinaryCategoryMedia(cat.id);
+          if (res.success && res.items.length > 0) {
+            setReferences((prev) => {
+              const existingIds = new Set(prev.map((r) => r.id));
+              const newItems = res.items.filter((item) => !existingIds.has(item.id));
+              if (newItems.length > 0) {
+                foundNew = true;
+                return [...newItems, ...prev];
+              }
+              return prev;
+            });
+          }
+        }
+      } catch (err) {
+        console.debug('Cloudinary sync check:', err);
+      }
+    }
+
+    const now = new Date();
+    setLastUpdatedText(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    setIsRefreshing(false);
+  }, [cloudinaryReady]);
+
+  // Initial sync & interval polling when active
+  useEffect(() => {
+    syncLatestMedia();
+
+    // Re-check whenever tab becomes visible / focused
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncLatestMedia();
+      }
+    };
+    window.addEventListener('focus', syncLatestMedia);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Light polling every 20 seconds while page is open
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        syncLatestMedia();
+      }
+    }, 20000);
+
+    return () => {
+      window.removeEventListener('focus', syncLatestMedia);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      clearInterval(interval);
+    };
+  }, [syncLatestMedia]);
+
+  // Real-time synchronization with Firestore (if configured)
   useEffect(() => {
     if (!firebaseReady) return;
 
     const unsubscribe = subscribeToReferences((remoteRefs) => {
       if (remoteRefs && remoteRefs.length > 0) {
         const remoteIds = new Set(remoteRefs.map((r) => r.id));
-        // Keep initial dummy references that aren't overwritten
         const merged = [
           ...remoteRefs,
           ...INITIAL_REFERENCES.filter((r) => !remoteIds.has(r.id))
         ];
         setReferences(merged);
+        setLastUpdatedText('just now');
       }
     });
 
     return () => unsubscribe();
   }, [firebaseReady]);
 
-  // Synchronize Dark Theme class
+  // Sync Dark Theme class
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark-theme');
@@ -85,32 +199,43 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(darkMode));
   }, [darkMode]);
 
-  // Cache references to localStorage as offline fallback
+  // Cache references to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_REFS, JSON.stringify(references));
     } catch (e) {
-      console.error('Failed to persist references', e);
+      console.error('Failed to cache references', e);
     }
   }, [references]);
 
-  // Filter references for the active category
+  // Filter references for active category
   const activeReferences = useMemo(() => {
+    if (!activeCategory) return [];
     return references.filter((r) => r.category === activeCategory);
   }, [references, activeCategory]);
 
-  const activeCategoryObj = CATEGORIES.find((c) => c.id === activeCategory) || CATEGORIES[0];
+  const activeCategoryObj = useMemo(() => {
+    return CATEGORIES.find((c) => c.id === activeCategory) || null;
+  }, [activeCategory]);
 
-  // Add new reference handler (updates local state & Firestore)
+  // Handle adding new reference (from DirectUploadCard)
   const handleAddReference = async (newRef) => {
-    const tempId = newRef.id || `ref-${Date.now()}`;
-    const optimisticRef = { ...newRef, id: tempId };
+    // 1. Optimistic local update
+    setReferences((prev) => [newRef, ...prev]);
+    setLastUpdatedText('just now');
 
-    // Immediate UI update
-    setReferences((prev) => [optimisticRef, ...prev]);
-    setActiveCategory(newRef.category);
+    // 2. Broadcast to other open browser tabs
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const channel = new BroadcastChannel('collabs_realtime_bus');
+        channel.postMessage({ type: 'ADD_REFERENCE', reference: newRef });
+        channel.close();
+      } catch (err) {
+        console.debug('BroadcastChannel error:', err);
+      }
+    }
 
-    // Save to Firebase Firestore for shared team viewing
+    // 3. Save to Firebase Firestore if configured
     if (firebaseReady) {
       try {
         await saveReferenceToFirestore(newRef);
@@ -120,54 +245,132 @@ export default function App() {
     }
   };
 
+  // Handle deleting reference
+  const handleDeleteReference = async (id) => {
+    // 1. Immediate local state update
+    setReferences((prev) => prev.filter((r) => r.id !== id));
+    if (selectedReference?.id === id) {
+      setSelectedReference(null);
+    }
+    setLastUpdatedText('just now');
+
+    // 2. Broadcast to other open browser tabs
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const channel = new BroadcastChannel('collabs_realtime_bus');
+        channel.postMessage({ type: 'DELETE_REFERENCE', id });
+        channel.close();
+      } catch (err) {
+        console.debug('BroadcastChannel error on delete:', err);
+      }
+    }
+
+    // 3. Delete from Firebase Firestore if configured
+    if (firebaseReady) {
+      try {
+        await deleteReferenceFromFirestore(id);
+      } catch (err) {
+        console.error('Failed to delete from Firestore:', err);
+      }
+    }
+  };
+
   return (
     <div className="minimal-app">
-      {/* Top Apple Navigation Bar */}
+      {/* Top Header */}
       <header className="minimal-header">
         <div className="header-content">
-          {/* Brand */}
-          <div className="minimal-brand" onClick={() => setActiveCategory('b2b')}>
-            <span className="brand-dot" />
-            <span className="brand-name">CollabS</span>
+          {/* Brand Logo & Back to Overview */}
+          <div className="minimal-brand-group">
+            <button
+              type="button"
+              className="minimal-brand"
+              onClick={() => setActiveCategory(null)}
+              title="Return to Main Categories Page"
+            >
+              <span className="brand-dot" />
+              <span className="brand-name">CollabS</span>
+            </button>
+
+            {activeCategoryObj && (
+              <div className="brand-breadcrumb">
+                <span className="crumb-slash">/</span>
+                <span className="crumb-current">{activeCategoryObj.name}</span>
+              </div>
+            )}
           </div>
 
-          {/* Central Category Segmented Control */}
-          <nav className="minimal-segmented-nav" aria-label="Product Pillars">
-            {CATEGORIES.map((cat) => {
-              const Icon = ICON_MAP[cat.id] || Building2;
-              const isActive = activeCategory === cat.id;
-              const count = references.filter((r) => r.category === cat.id).length;
+          {/* If inside category, show Back button + Segmented Tabs */}
+          {activeCategoryObj ? (
+            <nav className="minimal-segmented-nav" aria-label="Category Switcher">
+              <button
+                type="button"
+                onClick={() => setActiveCategory(null)}
+                className="segmented-tab back-overview-tab"
+                title="Return to 3 Cards Overview"
+              >
+                <Layers size={13} />
+                <span className="tab-label">All Pillars</span>
+              </button>
 
-              return (
-                <button
-                  key={cat.id}
-                  type="button"
-                  onClick={() => setActiveCategory(cat.id)}
-                  className={`segmented-tab ${isActive ? 'active' : ''}`}
-                >
-                  <Icon size={14} className="tab-icon" />
-                  <span className="tab-label">{cat.name}</span>
-                  <span className="tab-count">{count}</span>
-                </button>
-              );
-            })}
-          </nav>
+              <div className="segmented-divider" />
 
-          {/* Right Actions */}
+              {CATEGORIES.map((cat) => {
+                const Icon = ICON_MAP[cat.id] || Building2;
+                const isActive = activeCategory === cat.id;
+                const count = references.filter((r) => r.category === cat.id).length;
+
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setActiveCategory(cat.id)}
+                    className={`segmented-tab ${isActive ? 'active' : ''}`}
+                  >
+                    <Icon size={13} className="tab-icon" />
+                    <span className="tab-label">{cat.name}</span>
+                    <span className="tab-count">{count}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          ) : (
+            <div className="main-nav-pill-indicator">
+              <span className="pill-dot" />
+              <span>3 Product Pillars</span>
+            </div>
+          )}
+
+          {/* Right Header Actions */}
           <div className="minimal-header-actions">
-            {/* Cloud Status Indicator */}
+            {/* Live Cloud Status */}
             <div
-              className={`cloud-status-chip ${isCloudSynced ? 'synced' : 'local'}`}
+              className={`cloud-status-chip ${cloudinaryReady ? 'synced' : 'local'}`}
               title={
-                isCloudSynced
-                  ? 'Cloud Sync Active (Cloudinary + Firebase)'
-                  : 'Local Mode: Add Cloudinary & Firebase keys in .env / Vercel to share uploads with your team'
+                cloudinaryReady
+                  ? 'Cloudinary CDN active: Uploads are hosted in the cloud'
+                  : 'Local Mode: Add Cloudinary keys in .env'
               }
             >
               <span className="status-dot" />
-              <span className="status-label">{isCloudSynced ? 'Live Sync' : 'Local Mode'}</span>
+              <span className="status-label">
+                {cloudinaryReady ? 'Cloudinary Live' : 'Local Mode'}
+              </span>
             </div>
 
+            {/* Refresh / Sync Button */}
+            <button
+              type="button"
+              onClick={syncLatestMedia}
+              disabled={isRefreshing}
+              className="action-icon-btn"
+              title={`Check for new uploads (Last updated: ${lastUpdatedText})`}
+              aria-label="Refresh media"
+            >
+              <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
+            </button>
+
+            {/* Dark / Light Mode Toggle */}
             <button
               type="button"
               onClick={() => setDarkMode(!darkMode)}
@@ -177,75 +380,114 @@ export default function App() {
             >
               {darkMode ? <Sun size={15} /> : <Moon size={15} />}
             </button>
-
-            <button
-              type="button"
-              onClick={() => setIsUploadOpen(true)}
-              className="action-pill-btn"
-            >
-              <Plus size={14} strokeWidth={2.4} />
-              <span>Upload</span>
-            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Grid Viewport */}
+      {/* Main Content Viewport */}
       <main className="minimal-main">
-        {/* Category Header */}
-        <div className="section-heading-row">
-          <div className="heading-left">
-            <h1 className="category-title">{activeCategoryObj.name}</h1>
-            <p className="category-subtitle">{activeCategoryObj.description}</p>
-          </div>
-          <span className="reference-counter">
-            {activeReferences.length} {activeReferences.length === 1 ? 'reference' : 'references'}
-          </span>
-        </div>
-
-        {/* 3-per-row Visual Grid */}
-        {activeReferences.length > 0 ? (
-          <div className="three-column-grid">
-            {activeReferences.map((ref) => (
-              <MinimalCard
-                key={ref.id}
-                reference={ref}
-                onSelect={(r) => setSelectedReference(r)}
-              />
-            ))}
-          </div>
+        {/* VIEW 1: 3 Cards Main Page Navigation */}
+        {!activeCategory ? (
+          <CategoryCardsOverview
+            categories={CATEGORIES}
+            references={references}
+            onSelectCategory={(catId) => setActiveCategory(catId)}
+            onRefresh={syncLatestMedia}
+            isRefreshing={isRefreshing}
+            lastUpdatedText={lastUpdatedText}
+          />
         ) : (
-          <div className="minimal-empty-state">
-            <p className="empty-message">No UI references uploaded for {activeCategoryObj.name} yet.</p>
-            <button
-              type="button"
-              onClick={() => setIsUploadOpen(true)}
-              className="empty-action-btn"
-            >
-              <Plus size={14} />
-              <span>Upload First UI Reference</span>
-            </button>
+          /* VIEW 2: Inside the selected Category Area */
+          <div className="category-area-viewport">
+            {/* Section Header */}
+            <div className="section-heading-row">
+              <div className="heading-left">
+                <button
+                  type="button"
+                  onClick={() => setActiveCategory(null)}
+                  className="category-back-btn"
+                >
+                  <ChevronLeft size={16} />
+                  <span>All Pillars</span>
+                </button>
+                <div className="category-titles-stack">
+                  <h1 className="category-title">{activeCategoryObj.name}</h1>
+                  <p className="category-subtitle">{activeCategoryObj.description}</p>
+                </div>
+              </div>
+
+              <div className="heading-right">
+                {/* View Mode Toggle: Gallery vs Workflow */}
+                <div className="view-mode-segmented">
+                  <button
+                    type="button"
+                    onClick={() => setCategoryMode('gallery')}
+                    className={`view-mode-pill ${categoryMode === 'gallery' ? 'active' : ''}`}
+                    title="Grid gallery view"
+                  >
+                    <LayoutGrid size={13} />
+                    <span>Gallery</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCategoryMode('workflow')}
+                    className={`view-mode-pill ${categoryMode === 'workflow' ? 'active' : ''}`}
+                    title="Interactive workflow flow"
+                  >
+                    <Share2 size={13} />
+                    <span>Workflow</span>
+                  </button>
+                </div>
+
+                <span className="reference-counter">
+                  {activeReferences.length} {activeReferences.length === 1 ? 'item' : 'items'}
+                </span>
+              </div>
+            </div>
+
+            {/* Render Workflow Canvas OR Gallery Grid */}
+            {categoryMode === 'workflow' ? (
+              <WorkflowCanvas
+                category={activeCategory}
+                categoryObj={activeCategoryObj}
+                references={activeReferences}
+                onSelectReference={(r) => setSelectedReference(r)}
+                onBackToGallery={() => setCategoryMode('gallery')}
+              />
+            ) : (
+              /* Category Grid: FIRST CARD is the Direct Upload Card! */
+              <div className="three-column-grid">
+                {/* Card 1: Inline zero-friction upload card */}
+                <DirectUploadCard
+                  category={activeCategory}
+                  onUploadSuccess={handleAddReference}
+                />
+
+                {/* Uploaded references in this category */}
+                {activeReferences.map((ref) => (
+                  <MinimalCard
+                    key={ref.id}
+                    reference={ref}
+                    onSelect={(r) => setSelectedReference(r)}
+                    onDelete={handleDeleteReference}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>
 
-      {/* Full-Viewport Zoom Lightbox */}
+      {/* Full-Viewport Lightbox (Images & Videos) */}
       {selectedReference && (
         <FullscreenLightbox
           reference={selectedReference}
           allCategoryReferences={activeReferences}
           onClose={() => setSelectedReference(null)}
           onSelectReference={(ref) => setSelectedReference(ref)}
+          onDelete={handleDeleteReference}
         />
       )}
-
-      {/* Simple Upload Modal */}
-      <UploadModal
-        isOpen={isUploadOpen}
-        onClose={() => setIsUploadOpen(false)}
-        onAddReference={handleAddReference}
-        defaultCategory={activeCategory}
-      />
     </div>
   );
 }

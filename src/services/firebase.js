@@ -3,6 +3,8 @@ import {
   getFirestore,
   collection,
   addDoc,
+  deleteDoc,
+  doc,
   onSnapshot,
   query,
   orderBy
@@ -95,3 +97,17 @@ export async function saveReferenceToFirestore(reference) {
   const docRef = await addDoc(collection(db, 'references'), payload);
   return { id: docRef.id, ...payload };
 }
+
+/**
+ * Deletes a reference item from Firestore.
+ * @param {string} id - Firestore document ID
+ */
+export async function deleteReferenceFromFirestore(id) {
+  if (!db || !id) return;
+  try {
+    await deleteDoc(doc(db, 'references', id));
+  } catch (err) {
+    console.warn('Failed to delete reference from Firestore:', err);
+  }
+}
+
