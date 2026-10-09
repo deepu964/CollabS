@@ -1133,7 +1133,7 @@
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 8.5;
-  background-color: #0b0f19;
+  background-color: var(--bg-secondary);
   overflow: hidden;
 }
 
@@ -1151,8 +1151,12 @@
 .pillar-card-overlay-gradient {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
+  background: linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.04) 100%);
   pointer-events: none;
+}
+
+.dark-theme .pillar-card-overlay-gradient {
+  background: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, 0.4) 100%);
 }
 
 .pillar-floating-badge {
@@ -1161,14 +1165,15 @@
   right: 12px;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--bg-translucent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--border-subtle);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  color: #ffffff;
+  color: var(--text-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 /* Card Content Info */
@@ -1617,11 +1622,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--bg-translucent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
   opacity: 0;
   transform: scale(0.85);
   transition: all var(--transition-fast);
@@ -1930,7 +1936,7 @@
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 10;
-  background: #000;
+  background: var(--bg-secondary);
   overflow: hidden;
   cursor: pointer;
 }

@@ -14,10 +14,12 @@ export const CATEGORIES = [
     tagline: 'Enterprise & Wholesale Workflows',
     description: 'Enterprise workflows, wholesale order management, multi-tenant billing, and vendor portals.',
     icon: 'Building2',
-    color: '#6366F1', // Apple Indigo
-    coverImage: '/cards/b2b_cover.svg',
-    badgeBg: 'rgba(99, 102, 241, 0.1)',
-    badgeBorder: 'rgba(99, 102, 241, 0.28)',
+    color: '#5856D6', // Apple Indigo
+    coverImage: '/cards/b2b_cover_light.svg',
+    coverLightImage: '/cards/b2b_cover_light.svg',
+    coverDarkImage: '/cards/b2b_cover.svg',
+    badgeBg: 'rgba(88, 86, 214, 0.08)',
+    badgeBorder: 'rgba(88, 86, 214, 0.22)',
   },
   {
     id: 'admin',
@@ -27,10 +29,12 @@ export const CATEGORIES = [
     tagline: 'Console & System Operations',
     description: 'Back-office operations, global telemetry, user permissions, audit logs, and system controls.',
     icon: 'ShieldCheck',
-    color: '#06B6D4', // Apple Teal / Cyan
-    coverImage: '/cards/admin_cover.svg',
-    badgeBg: 'rgba(6, 182, 212, 0.1)',
-    badgeBorder: 'rgba(6, 182, 212, 0.28)',
+    color: '#0A8491', // Apple Teal
+    coverImage: '/cards/admin_cover_light.svg',
+    coverLightImage: '/cards/admin_cover_light.svg',
+    coverDarkImage: '/cards/admin_cover.svg',
+    badgeBg: 'rgba(10, 132, 145, 0.08)',
+    badgeBorder: 'rgba(10, 132, 145, 0.22)',
   },
   {
     id: 'driver',
@@ -40,10 +44,12 @@ export const CATEGORIES = [
     tagline: 'Mobile & Dispatch Operations',
     description: 'Field worker mobile interfaces, turn-by-turn routing, dispatch cards, earnings, and trip logs.',
     icon: 'Smartphone',
-    color: '#10B981', // Apple Emerald Green
-    coverImage: '/cards/driver_cover.svg',
-    badgeBg: 'rgba(16, 185, 129, 0.1)',
-    badgeBorder: 'rgba(16, 185, 129, 0.28)',
+    color: '#248A3D', // Apple Forest Green
+    coverImage: '/cards/driver_cover_light.svg',
+    coverLightImage: '/cards/driver_cover_light.svg',
+    coverDarkImage: '/cards/driver_cover.svg',
+    badgeBg: 'rgba(36, 138, 61, 0.08)',
+    badgeBorder: 'rgba(36, 138, 61, 0.22)',
   },
 ];
 

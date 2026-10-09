@@ -10,7 +10,8 @@ const ICON_MAP = {
 export default function CategoryCardsOverview({
   categories,
   references,
-  onSelectCategory
+  onSelectCategory,
+  darkMode = false
 }) {
   return (
     <div className="cards-overview-container">
@@ -26,6 +27,9 @@ export default function CategoryCardsOverview({
           const Icon = ICON_MAP[cat.id] || Building2;
           const catRefs = references.filter((r) => r.category === cat.id);
           const count = catRefs.length;
+          const coverSrc = darkMode
+            ? cat.coverDarkImage || cat.coverImage
+            : cat.coverLightImage || cat.coverImage;
 
           return (
             <div
@@ -43,7 +47,7 @@ export default function CategoryCardsOverview({
               {/* Card Media Preview */}
               <div className="pillar-card-media-wrap">
                 <img
-                  src={cat.coverImage}
+                  src={coverSrc}
                   alt={`${cat.name} Preview`}
                   className="pillar-card-img"
                   loading="eager"

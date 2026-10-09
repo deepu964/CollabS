@@ -391,6 +391,7 @@ export default function App() {
           <CategoryCardsOverview
             categories={CATEGORIES}
             references={references}
+            darkMode={darkMode}
             onSelectCategory={(catId) => setActiveCategory(catId)}
             onRefresh={syncLatestMedia}
             isRefreshing={isRefreshing}
