@@ -148,6 +148,73 @@
   }
 }
 
+/* Cloudinary Setup Notice Banner */
+.cloudinary-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  background: rgba(14, 165, 233, 0.08);
+  border-bottom: 1px solid rgba(14, 165, 233, 0.2);
+  color: var(--text-primary);
+  font-size: 13px;
+  animation: fadeInDown 0.3s ease-out;
+}
+
+.setup-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.setup-banner-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(14, 165, 233, 0.2);
+  color: #0284c7;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dark-theme .setup-banner-badge {
+  color: #38bdf8;
+}
+
+.setup-banner-text {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.setup-banner-text strong {
+  color: var(--text-primary);
+}
+
+.setup-banner-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.setup-banner-dismiss:hover {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.dark-theme .setup-banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* Header Actions */
 .minimal-header-actions {
   display: flex;
@@ -1653,6 +1720,74 @@
 .lightbox-btn.delete-btn:hover {
   background: rgba(239, 68, 68, 0.2);
   color: #f87171;
+}
+
+/* Card Error Placeholder */
+.card-media-error-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: var(--bg-secondary);
+  color: var(--text-tertiary);
+  padding: 16px;
+  text-align: center;
+}
+
+.card-media-error-placeholder .error-icon {
+  opacity: 0.6;
+}
+
+.card-media-error-placeholder .error-msg {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.error-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.error-retry-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--border-medium);
+}
+
+/* Lightbox Error Message */
+.lightbox-error-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #ffffff;
+  text-align: center;
+  padding: 24px;
+}
+
+.lightbox-error-msg p {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.lightbox-error-link {
+  font-size: 12px;
+  color: #38bdf8;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* --------------------------------------------------------------------------

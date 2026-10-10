@@ -133,8 +133,11 @@ export default function UploadModal({
       if (selectedFile) {
         if (cloudinaryReady) {
           setStatusText('Uploading to Cloudinary...');
-          const uploadRes = await uploadImageToCloudinary(selectedFile);
-          finalImageUrl = uploadRes.url;
+          const uploadRes = await uploadImageToCloudinary(selectedFile, {
+            category,
+            title: title.trim()
+          });
+          finalImageUrl = (uploadRes.url || '').replace(/^http:\/\//i, 'https://');
         } else {
           // Fallback to base64 if Cloudinary is not configured yet
           setStatusText('Processing local image...');
@@ -153,12 +156,15 @@ export default function UploadModal({
         `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
 
       await onAddReference({
+        id: `ref-${Date.now()}`,
         title: finalTitle,
         category,
-        imageUrl: finalImageUrl,
+        imageUrl: finalImageUrl.replace(/^http:\/\//i, 'https://'),
         sourceUrl: sourceUrl.trim() || '',
         deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        isLocalUnsynced: true,
+        isCloudinarySource: cloudinaryReady
       });
 
       // Reset and close

@@ -12,26 +12,20 @@ import {
   Building2,
   ShieldCheck,
   Smartphone,
-  Cloud,
   ChevronLeft,
   RefreshCw,
   Layers,
   LayoutGrid,
   Share2,
-  CheckCircle2
+  X
 } from 'lucide-react';
 import {
-  subscribeToReferences,
-  saveReferenceToFirestore,
-  deleteReferenceFromFirestore,
-  isFirebaseConfigured
-} from './services/firebase';
-import {
   isCloudinaryConfigured,
+  fetchAllCloudinaryMedia,
   fetchCloudinaryCategoryMedia
 } from './services/cloudinary';
 import {
-  fetchRemoteSharedReferences,
+  fetchRemoteSharedState,
   saveRemoteSharedReference,
   deleteRemoteSharedReference
 } from './services/cloudSync';
@@ -88,8 +82,9 @@ export default function App() {
   // Sync state
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdatedText, setLastUpdatedText] = useState('just now');
+  const [cloudinaryNeedsSetting, setCloudinaryNeedsSetting] = useState(false);
+  const [showCloudinaryGuide, setShowCloudinaryGuide] = useState(false);
 
-  const firebaseReady = isFirebaseConfigured();
   const cloudinaryReady = isCloudinaryConfigured();
 
   // Multi-tab sync via BroadcastChannel
@@ -139,52 +134,60 @@ export default function App() {
   // Sync from Global Cloud Registry, Cloudinary tag lists & Firestore
   const syncLatestMedia = useCallback(async () => {
     setIsRefreshing(true);
-    const deletedSet = getDeletedIds();
 
     try {
-      // 1. Fetch from Global Shared Cloud Registry (cross-browser / cross-device)
-      const remoteShared = await fetchRemoteSharedReferences();
-      if (Array.isArray(remoteShared)) {
-        setReferences((prev) => {
-          const remoteClean = remoteShared.filter(
-            (item) => item && item.id && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
-          );
-          const remoteIdSet = new Set(remoteClean.map((r) => r.id));
+      // 1. Fetch from Global Shared Cloud Registry (Cloudinary raw registry with deletedIds tracking)
+      const remoteState = await fetchRemoteSharedState();
+      const remoteRefs = remoteState.references || [];
+      const remoteDeleted = remoteState.deletedIds || [];
 
-          // Keep any unpushed local items (e.g. uploaded moments ago)
-          const unpushedLocal = prev.filter(
-            (l) => l && l.id && !DUMMY_IDS.has(l.id) && !deletedSet.has(l.id) && !remoteIdSet.has(l.id)
-          );
-
-          // If there are unpushed items in local state, sync them up to the cloud registry
-          if (unpushedLocal.length > 0) {
-            unpushedLocal.forEach((item) => {
-              saveRemoteSharedReference(item).catch(() => {});
-            });
-          }
-
-          return [...unpushedLocal, ...remoteClean];
-        });
+      // Merge remote deleted IDs into local storage so they are permanently tracked
+      if (remoteDeleted.length > 0) {
+        remoteDeleted.forEach((id) => markIdAsDeleted(id));
       }
+      const deletedSet = getDeletedIds();
 
-      // 2. Also check Cloudinary tag lists if enabled in Cloudinary console
+      // Clean remote references against deleted IDs and dummy IDs
+      const cleanRemoteRefs = remoteRefs.filter(
+        (item) => item && item.id && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+      );
+      const remoteIdSet = new Set(cleanRemoteRefs.map((r) => r.id));
+
+      setReferences((prev) => {
+        // Purge any references that have been deleted
+        const activePrev = prev.filter((item) => item && item.id && !deletedSet.has(item.id));
+
+        // Keep local items that were recently uploaded locally but haven't reached remote yet
+        const unpushedLocal = activePrev.filter(
+          (l) => l.isLocalUnsynced && !remoteIdSet.has(l.id)
+        );
+
+        // If there are unpushed items in local state, sync them up to the cloud registry
+        if (unpushedLocal.length > 0) {
+          unpushedLocal.forEach((item) => {
+            saveRemoteSharedReference(item).catch(() => {});
+          });
+        }
+
+        return [...unpushedLocal, ...cleanRemoteRefs];
+      });
+
+      // 2. Query Cloudinary tag lists directly for all media
       if (cloudinaryReady) {
-        for (const cat of CATEGORIES) {
-          const res = await fetchCloudinaryCategoryMedia(cat.id);
-          if (res.success && res.items.length > 0) {
-            setReferences((prev) => {
-              const existingIds = new Set(prev.map((r) => r.id));
-              const newItems = res.items.filter(
-                (item) => !existingIds.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
-              );
-              if (newItems.length > 0) {
-                // Mirror newly discovered Cloudinary items to the global cloud registry
-                newItems.forEach((item) => saveRemoteSharedReference(item).catch(() => {}));
-                return [...newItems, ...prev];
-              }
-              return prev;
-            });
-          }
+        const res = await fetchAllCloudinaryMedia();
+        setCloudinaryNeedsSetting(Boolean(res.requiresSetting));
+
+        if (res.success && res.items.length > 0) {
+          setReferences((prev) => {
+            const existingIds = new Set(prev.map((r) => r.id));
+            const newItems = res.items.filter(
+              (item) => !existingIds.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+            );
+            if (newItems.length > 0) {
+              return [...newItems, ...prev];
+            }
+            return prev;
+          });
         }
       }
     } catch (err) {
@@ -209,12 +212,12 @@ export default function App() {
     window.addEventListener('focus', syncLatestMedia);
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Responsive light polling every 10 seconds while page is open
+    // Responsive polling every 6 seconds while page is open and visible
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         syncLatestMedia();
       }
-    }, 10000);
+    }, 6000);
 
     return () => {
       window.removeEventListener('focus', syncLatestMedia);
@@ -222,25 +225,6 @@ export default function App() {
       clearInterval(interval);
     };
   }, [syncLatestMedia]);
-
-  // Real-time synchronization with Firestore (if configured)
-  useEffect(() => {
-    if (!firebaseReady) return;
-
-    const unsubscribe = subscribeToReferences((remoteRefs) => {
-      if (remoteRefs && remoteRefs.length > 0) {
-        const remoteIds = new Set(remoteRefs.map((r) => r.id));
-        const merged = [
-          ...remoteRefs,
-          ...INITIAL_REFERENCES.filter((r) => !remoteIds.has(r.id))
-        ];
-        setReferences(merged);
-        setLastUpdatedText('just now');
-      }
-    });
-
-    return () => unsubscribe();
-  }, [firebaseReady]);
 
   // Sync Dark Theme class
   useEffect(() => {
@@ -273,35 +257,32 @@ export default function App() {
 
   // Handle adding new reference (from DirectUploadCard)
   const handleAddReference = async (newRef) => {
-    // 1. Optimistic local update
-    setReferences((prev) => [newRef, ...prev]);
+    // 1. Optimistic local update with unsynced marker
+    const optimisticRef = { ...newRef, isLocalUnsynced: true };
+    setReferences((prev) => [optimisticRef, ...prev]);
     setLastUpdatedText('just now');
 
     // 2. Broadcast to other open browser tabs on same device
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         const channel = new BroadcastChannel('collabs_realtime_bus');
-        channel.postMessage({ type: 'ADD_REFERENCE', reference: newRef });
+        channel.postMessage({ type: 'ADD_REFERENCE', reference: optimisticRef });
         channel.close();
       } catch (err) {
         console.debug('BroadcastChannel error:', err);
       }
     }
 
-    // 3. Immediately persist to Global Shared Cloud Registry (cross-device sync)
+    // 3. Immediately persist to Global Shared Cloud Registry (cross-device/browser sync)
     try {
-      await saveRemoteSharedReference(newRef);
+      const saved = await saveRemoteSharedReference(newRef);
+      if (saved) {
+        setReferences((prev) =>
+          prev.map((r) => (r.id === newRef.id ? { ...r, isLocalUnsynced: false } : r))
+        );
+      }
     } catch (err) {
       console.warn('Failed to sync to cloud registry:', err);
-    }
-
-    // 4. Save to Firebase Firestore if configured
-    if (firebaseReady) {
-      try {
-        await saveReferenceToFirestore(newRef);
-      } catch (err) {
-        console.error('Failed to sync reference to Firestore:', err);
-      }
     }
   };
 
@@ -328,20 +309,11 @@ export default function App() {
       }
     }
 
-    // 4. Delete from Global Shared Cloud Registry
+    // 4. Delete from Global Shared Cloud Registry (Cloudinary raw registry with deletedIds tracking)
     try {
       await deleteRemoteSharedReference(id);
     } catch (err) {
       console.warn('Failed to delete from cloud registry:', err);
-    }
-
-    // 5. Delete from Firebase Firestore if configured
-    if (firebaseReady) {
-      try {
-        await deleteReferenceFromFirestore(id);
-      } catch (err) {
-        console.error('Failed to delete from Firestore:', err);
-      }
     }
   };
 
@@ -453,6 +425,26 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Cloudinary Setup Notice if Resource List is restricted */}
+      {cloudinaryNeedsSetting && !showCloudinaryGuide && (
+        <div className="cloudinary-setup-banner">
+          <div className="setup-banner-content">
+            <span className="setup-banner-badge">Cloudinary Sync Notice</span>
+            <span className="setup-banner-text">
+              To allow all browsers to automatically fetch shared Cloudinary uploads, enable <strong>Resource list</strong> in your Cloudinary Dashboard: <em>Settings &rarr; Security &rarr; Restricted media types &rarr; Enable 'Resource list'</em>.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="setup-banner-dismiss"
+            onClick={() => setShowCloudinaryGuide(true)}
+            title="Dismiss notice"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Main Content Viewport */}
       <main className="minimal-main">

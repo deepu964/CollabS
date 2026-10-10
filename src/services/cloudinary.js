@@ -1,5 +1,5 @@
-const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
-const UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
+const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
 
 export const isCloudinaryConfigured = () => {
   return Boolean(
@@ -52,8 +52,10 @@ export async function uploadMediaToCloudinary(file, { category = 'b2b', title = 
     throw new Error(errorMsg);
   }
 
+  const secureUrl = (data.secure_url || data.url || '').replace(/^http:\/\//i, 'https://');
+
   return {
-    url: data.secure_url || data.url,
+    url: secureUrl,
     publicId: data.public_id,
     resourceType: data.resource_type || (file.type.startsWith('video/') ? 'video' : 'image'),
     width: data.width,
@@ -67,12 +69,32 @@ export async function uploadMediaToCloudinary(file, { category = 'b2b', title = 
 export const uploadImageToCloudinary = uploadMediaToCloudinary;
 
 /**
- * Attempts to retrieve media items directly from Cloudinary using tag list JSON.
- * Note: Cloudinary requires "Resource list" to be enabled in Security Settings for public tag listing.
- * @param {string} category - 'b2b', 'admin', or 'driver'
+ * Ensures optimal Cloudinary image delivery across all browsers with HTTPS and f_auto,q_auto.
+ * @param {string} url - Media URL
+ * @param {string} resourceType - 'image' or 'video'
+ * @returns {string} Optimized URL
+ */
+export function getOptimizedMediaUrl(url, resourceType = 'image') {
+  if (!url || typeof url !== 'string') return '';
+  let cleanUrl = url.trim().replace(/^http:\/\//i, 'https://');
+  if (
+    cleanUrl.includes('res.cloudinary.com') &&
+    cleanUrl.includes('/upload/') &&
+    !cleanUrl.includes('/f_auto') &&
+    resourceType !== 'video' &&
+    !cleanUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i)
+  ) {
+    cleanUrl = cleanUrl.replace('/upload/', '/upload/f_auto,q_auto/');
+  }
+  return cleanUrl;
+}
+
+/**
+ * Retrieves all media items directly from Cloudinary using the collabs tag list JSON.
+ * Automatically classifies items into b2b, admin, and driver categories.
  * @returns {Promise<{ success: boolean, items: Array, requiresSetting?: boolean }>}
  */
-export async function fetchCloudinaryCategoryMedia(category) {
+export async function fetchAllCloudinaryMedia() {
   if (!isCloudinaryConfigured()) {
     return { success: false, items: [], unconfigured: true };
   }
@@ -80,9 +102,9 @@ export async function fetchCloudinaryCategoryMedia(category) {
   const items = [];
   let requiresSetting = false;
 
-  // Try image list
+  // 1. Fetch collabs global tag list for images
   try {
-    const imgRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/${category}.json`, {
+    const imgRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/collabs.json?t=${Date.now()}`, {
       cache: 'no-store'
     });
 
@@ -92,11 +114,22 @@ export async function fetchCloudinaryCategoryMedia(category) {
       const data = await imgRes.json();
       if (Array.isArray(data.resources)) {
         data.resources.forEach((res) => {
+          // Skip 1x1 test pixels
+          if (res.width <= 10 && res.height <= 10) return;
+
+          let cat = 'b2b';
+          const folder = (res.asset_folder || '').toLowerCase();
+          const pub = (res.public_id || '').toLowerCase();
+
+          if (folder.includes('admin') || pub.includes('admin')) cat = 'admin';
+          else if (folder.includes('driver') || pub.includes('driver')) cat = 'driver';
+          else if (folder.includes('b2b') || pub.includes('b2b')) cat = 'b2b';
+
           items.push({
-            id: `cld-${res.public_id}`,
+            id: `cld-${res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
             publicId: res.public_id,
-            title: res.context?.custom?.caption || res.context?.custom?.title || `${category.toUpperCase()} Reference`,
-            category,
+            title: res.context?.custom?.caption || res.context?.custom?.title || `${cat.toUpperCase()} Reference`,
+            category: cat,
             resourceType: 'image',
             imageUrl: `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/v${res.version}/${res.public_id}.${res.format}`,
             createdAt: res.created_at,
@@ -106,12 +139,12 @@ export async function fetchCloudinaryCategoryMedia(category) {
       }
     }
   } catch (err) {
-    console.debug('Cloudinary image list fetch error:', err);
+    console.debug('Cloudinary collabs tag fetch error:', err);
   }
 
-  // Try video list
+  // 2. Also check video collabs tag list
   try {
-    const vidRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/video/list/${category}.json`, {
+    const vidRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/video/list/collabs.json?t=${Date.now()}`, {
       cache: 'no-store'
     });
 
@@ -119,11 +152,18 @@ export async function fetchCloudinaryCategoryMedia(category) {
       const data = await vidRes.json();
       if (Array.isArray(data.resources)) {
         data.resources.forEach((res) => {
+          let cat = 'b2b';
+          const folder = (res.asset_folder || '').toLowerCase();
+          const pub = (res.public_id || '').toLowerCase();
+
+          if (folder.includes('admin') || pub.includes('admin')) cat = 'admin';
+          else if (folder.includes('driver') || pub.includes('driver')) cat = 'driver';
+
           items.push({
-            id: `cld-${res.public_id}`,
+            id: `cld-${res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
             publicId: res.public_id,
-            title: res.context?.custom?.caption || res.context?.custom?.title || `${category.toUpperCase()} Video Reference`,
-            category,
+            title: res.context?.custom?.caption || res.context?.custom?.title || `${cat.toUpperCase()} Video Reference`,
+            category: cat,
             resourceType: 'video',
             imageUrl: `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/v${res.version}/${res.public_id}.${res.format}`,
             createdAt: res.created_at,
@@ -140,5 +180,19 @@ export async function fetchCloudinaryCategoryMedia(category) {
     success: items.length > 0,
     items,
     requiresSetting
+  };
+}
+
+/**
+ * Filtered convenience fetch for a specific category.
+ * @param {string} category - 'b2b', 'admin', or 'driver'
+ * @returns {Promise<{ success: boolean, items: Array, requiresSetting?: boolean }>}
+ */
+export async function fetchCloudinaryCategoryMedia(category) {
+  const all = await fetchAllCloudinaryMedia();
+  return {
+    success: all.success,
+    requiresSetting: all.requiresSetting,
+    items: all.items.filter((item) => item.category === category)
   };
 }

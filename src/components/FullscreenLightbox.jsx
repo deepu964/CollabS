@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, ExternalLink, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Download, Trash2 } from 'lucide-react';
+import { X, ExternalLink, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Download, Trash2, AlertCircle } from 'lucide-react';
+import { getOptimizedMediaUrl } from '../services/cloudinary';
 
 export default function FullscreenLightbox({
   reference,
@@ -9,9 +10,15 @@ export default function FullscreenLightbox({
   onDelete
 }) {
   const [isZoomed, setIsZoomed] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
-  const isVideo = reference.resourceType === 'video' ||
-    Boolean(reference.imageUrl && reference.imageUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i));
+  useEffect(() => {
+    setLoadError(false);
+    setIsZoomed(false);
+  }, [reference?.id]);
+
+  const isVideo = reference?.resourceType === 'video' ||
+    Boolean(reference?.imageUrl && reference.imageUrl.match(/\.(mp4|webm|mov|m4v)(\?.*)?$/i));
 
   // Keyboard navigation: Escape to close, Arrow keys to navigate
   useEffect(() => {
@@ -176,19 +183,33 @@ export default function FullscreenLightbox({
           }
         }}
       >
-        {isVideo ? (
+        {loadError ? (
+          <div className="lightbox-error-msg" onClick={(e) => e.stopPropagation()}>
+            <AlertCircle size={32} />
+            <p>Failed to load full media file.</p>
+            <a
+              href={reference.imageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="lightbox-error-link"
+            >
+              Open direct URL in new tab
+            </a>
+          </div>
+        ) : isVideo ? (
           <video
-            src={reference.imageUrl}
+            src={getOptimizedMediaUrl(reference.imageUrl, 'video')}
             controls
             autoPlay
             loop
             playsInline
             className="lightbox-full-video"
             onClick={(e) => e.stopPropagation()}
+            onError={() => setLoadError(true)}
           />
         ) : (
           <img
-            src={reference.imageUrl}
+            src={getOptimizedMediaUrl(reference.imageUrl, 'image')}
             alt={reference.title}
             className="lightbox-full-img"
             onClick={(e) => {
@@ -196,6 +217,7 @@ export default function FullscreenLightbox({
               setIsZoomed(!isZoomed);
             }}
             title="Click to toggle zoom"
+            onError={() => setLoadError(true)}
           />
         )}
       </div>

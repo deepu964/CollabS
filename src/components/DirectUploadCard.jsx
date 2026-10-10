@@ -95,7 +95,7 @@ export default function DirectUploadCard({ category, onUploadSuccess }) {
           category,
           title: title.trim()
         });
-        finalMediaUrl = result.url;
+        finalMediaUrl = (result.url || '').replace(/^http:\/\//i, 'https://');
         resourceType = result.resourceType;
         publicId = result.publicId;
       } else {
@@ -114,14 +114,15 @@ export default function DirectUploadCard({ category, onUploadSuccess }) {
       const finalTitle = title.trim() || fallbackTitle;
 
       const newRef = {
-        id: publicId ? `cld-${publicId}` : `ref-${Date.now()}`,
+        id: publicId ? `cld-${publicId.replace(/[^a-zA-Z0-9_-]/g, '_')}` : `ref-${Date.now()}`,
         title: finalTitle,
         category,
-        imageUrl: finalMediaUrl,
+        imageUrl: finalMediaUrl.replace(/^http:\/\//i, 'https://'),
         resourceType,
         deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
         createdAt: new Date().toISOString(),
-        isCloudinarySource: cloudinaryReady
+        isCloudinarySource: cloudinaryReady,
+        isLocalUnsynced: true
       };
 
       await onUploadSuccess(newRef);

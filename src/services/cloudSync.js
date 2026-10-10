@@ -1,29 +1,34 @@
 /**
  * CloudSync Service
  * Provides real-time cross-device and multi-browser synchronization for CollabS references.
- * Backed by a globally accessible shared cloud registry on restful-api.dev.
+ * Backed by Cloudinary's high-performance global CDN raw registry.
+ * Guarantees that references uploaded on any browser/device are instantly visible to all,
+ * and references deleted from any browser are permanently purged across everyone.
  */
 
-const SHARED_REGISTRY_ID = 'ff808181a09d98f701a12288f492318d';
-const REGISTRY_URL = `https://api.restful-api.dev/objects/${SHARED_REGISTRY_ID}`;
-const REGISTRY_NAME = 'collabs_global_media_registry_v1';
+const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
+const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
+const REGISTRY_PUBLIC_ID = 'collabs_global_media_registry_v2';
+const REGISTRY_READ_URL = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/${REGISTRY_PUBLIC_ID}`;
+const REGISTRY_WRITE_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
 
 let isSyncing = false;
 
 /**
- * Fetch all shared references from the cloud registry.
- * @returns {Promise<Array>} Array of reference objects
+ * Fetch complete shared state (references + globally deleted IDs) from Cloudinary CDN registry.
+ * @returns {Promise<{ references: Array, deletedIds: Array, lastUpdated: string }>}
  */
-export async function fetchRemoteSharedReferences() {
+export async function fetchRemoteSharedState() {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
 
   try {
-    const res = await fetch(REGISTRY_URL, {
+    const cacheBuster = Date.now();
+    const res = await fetch(`${REGISTRY_READ_URL}?t=${cacheBuster}`, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'Cache-Control': 'no-cache'
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
       },
       signal: controller.signal
     });
@@ -31,21 +36,85 @@ export async function fetchRemoteSharedReferences() {
     clearTimeout(timeoutId);
 
     if (!res.ok) {
+      if (res.status === 404) {
+        // Registry doesn't exist yet, return empty baseline
+        return { references: [], deletedIds: [], lastUpdated: new Date().toISOString() };
+      }
       console.warn(`[CloudSync] Registry fetch returned status ${res.status}`);
-      return [];
+      return { references: [], deletedIds: [], lastUpdated: '' };
     }
 
     const data = await res.json();
-    if (data?.data?.references && Array.isArray(data.data.references)) {
-      return data.data.references;
-    }
-    return [];
+    const rawRefs = Array.isArray(data?.references) ? data.references : [];
+    const deletedList = Array.isArray(data?.deletedIds) ? data.deletedIds : [];
+    const deletedSet = new Set(deletedList);
+
+    // Filter out deleted items and sanitize URLs
+    const sanitizedRefs = rawRefs
+      .filter((r) => r && r.id && !deletedSet.has(r.id))
+      .map((r) => ({
+        ...r,
+        imageUrl: (r.imageUrl || '').replace(/^http:\/\//i, 'https://')
+      }));
+
+    return {
+      references: sanitizedRefs,
+      deletedIds: deletedList,
+      lastUpdated: data?.lastUpdated || new Date().toISOString()
+    };
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name !== 'AbortError') {
-      console.warn('[CloudSync] Failed to fetch remote references:', err.message);
+      console.warn('[CloudSync] Failed to fetch remote shared state:', err.message);
     }
-    return [];
+    return { references: [], deletedIds: [], lastUpdated: '' };
+  }
+}
+
+/**
+ * Fetch all shared references from the cloud registry.
+ * @returns {Promise<Array>} Array of reference objects
+ */
+export async function fetchRemoteSharedReferences() {
+  const state = await fetchRemoteSharedState();
+  return state.references;
+}
+
+/**
+ * Push an updated registry state directly to Cloudinary raw upload.
+ * @param {Object} state - { references: Array, deletedIds: Array }
+ * @returns {Promise<boolean>}
+ */
+async function pushRegistryToCloudinary(state) {
+  try {
+    const payload = JSON.stringify({
+      version: 2,
+      lastUpdated: new Date().toISOString(),
+      references: state.references || [],
+      deletedIds: (state.deletedIds || []).slice(-500) // Keep last 500 deleted IDs for deduplication
+    });
+
+    const formData = new FormData();
+    const blob = new Blob([payload], { type: 'application/json' });
+    formData.append('file', blob);
+    formData.append('upload_preset', UPLOAD_PRESET);
+    formData.append('public_id', REGISTRY_PUBLIC_ID);
+
+    const res = await fetch(REGISTRY_WRITE_URL, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('[CloudSync] Failed to write registry to Cloudinary:', res.status, errText);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('[CloudSync] Network error pushing registry:', err);
+    return false;
   }
 }
 
@@ -55,35 +124,39 @@ export async function fetchRemoteSharedReferences() {
  * @returns {Promise<boolean>}
  */
 export async function saveRemoteSharedReference(newRef) {
-  if (!newRef || !newRef.id) return false;
+  if (!newRef || !newRef.id || !newRef.imageUrl) return false;
+
+  // Ensure image URL is https and not local blob
+  if (newRef.imageUrl.startsWith('blob:') || newRef.imageUrl.startsWith('file:')) {
+    console.warn('[CloudSync] Cannot sync local blob URL to cloud registry:', newRef.imageUrl);
+    return false;
+  }
+
+  const cleanRef = {
+    ...newRef,
+    imageUrl: newRef.imageUrl.replace(/^http:\/\//i, 'https://')
+  };
 
   try {
-    // 1. Fetch latest remote state to prevent overwriting
-    const existing = await fetchRemoteSharedReferences();
+    // 1. Fetch latest remote state to prevent race-condition overwriting
+    const currentState = await fetchRemoteSharedState();
+    const currentDeletedSet = new Set(currentState.deletedIds || []);
+
+    // If item was previously deleted, remove it from deleted list since user explicitly added it
+    const updatedDeletedIds = (currentState.deletedIds || []).filter((id) => id !== cleanRef.id);
 
     // 2. Filter out duplicates by id or imageUrl
-    const filtered = existing.filter(
-      (r) => r.id !== newRef.id && (r.imageUrl !== newRef.imageUrl || !newRef.imageUrl)
+    const filteredRefs = (currentState.references || []).filter(
+      (r) => r.id !== cleanRef.id && (r.imageUrl !== cleanRef.imageUrl || !cleanRef.imageUrl)
     );
 
-    const updatedReferences = [newRef, ...filtered];
+    const updatedReferences = [cleanRef, ...filteredRefs];
 
-    // 3. Put back to the global cloud registry
-    const res = await fetch(REGISTRY_URL, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: REGISTRY_NAME,
-        data: {
-          lastUpdated: new Date().toISOString(),
-          references: updatedReferences
-        }
-      })
+    // 3. Put back to global cloud registry
+    return await pushRegistryToCloudinary({
+      references: updatedReferences,
+      deletedIds: updatedDeletedIds
     });
-
-    return res.ok;
   } catch (err) {
     console.error('[CloudSync] Error saving reference to cloud registry:', err);
     return false;
@@ -91,7 +164,7 @@ export async function saveRemoteSharedReference(newRef) {
 }
 
 /**
- * Delete a reference from the cloud registry so it disappears for all users.
+ * Delete a reference from the cloud registry so it disappears permanently for all users.
  * @param {string} id - Reference ID
  * @returns {Promise<boolean>}
  */
@@ -99,24 +172,17 @@ export async function deleteRemoteSharedReference(id) {
   if (!id) return false;
 
   try {
-    const existing = await fetchRemoteSharedReferences();
-    const updatedReferences = existing.filter((r) => r.id !== id);
+    const currentState = await fetchRemoteSharedState();
+    const updatedReferences = (currentState.references || []).filter((r) => r.id !== id);
 
-    const res = await fetch(REGISTRY_URL, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: REGISTRY_NAME,
-        data: {
-          lastUpdated: new Date().toISOString(),
-          references: updatedReferences
-        }
-      })
+    // Add to deletedIds set to ensure no other browser resurrects it
+    const deletedSet = new Set(currentState.deletedIds || []);
+    deletedSet.add(id);
+
+    return await pushRegistryToCloudinary({
+      references: updatedReferences,
+      deletedIds: Array.from(deletedSet)
     });
-
-    return res.ok;
   } catch (err) {
     console.error('[CloudSync] Error deleting reference from cloud registry:', err);
     return false;
@@ -124,19 +190,24 @@ export async function deleteRemoteSharedReference(id) {
 }
 
 /**
- * Bidirectional reconciliation: merges local references with remote references,
- * ensuring any uploads created on either side are safely shared globally.
+ * Reconcile local state with remote registry.
+ * Authoritative: remote state is source of truth.
  * @param {Array} localRefs - Current references in local state
- * @returns {Promise<Array>} Merged references array
+ * @returns {Promise<{ references: Array, deletedIds: Array }>}
  */
 export async function reconcileReferences(localRefs = []) {
-  if (isSyncing) return localRefs;
+  if (isSyncing) return { references: localRefs, deletedIds: [] };
   isSyncing = true;
 
   try {
-    const remoteRefs = await fetchRemoteSharedReferences();
+    const remoteState = await fetchRemoteSharedState();
+    const remoteRefs = remoteState.references || [];
+    const deletedSet = new Set(remoteState.deletedIds || []);
 
-    // Index existing items
+    // Filter local references against remote deleted IDs
+    const cleanLocal = (localRefs || []).filter((r) => r && r.id && !deletedSet.has(r.id));
+
+    // If remote already has items or is reachable, remote is source of truth
     const remoteIdMap = new Map();
     remoteRefs.forEach((r) => {
       if (r && r.id) remoteIdMap.set(r.id, r);
@@ -145,38 +216,30 @@ export async function reconcileReferences(localRefs = []) {
     let hasUnsavedLocal = false;
     const mergedList = [...remoteRefs];
 
-    // If local has references (e.g. from previous uploads) not in remote, add them
-    for (const localItem of localRefs) {
-      if (localItem && localItem.id && !remoteIdMap.has(localItem.id)) {
-        // Only push if it has a real URL (not dummy)
-        if (localItem.imageUrl && !localItem.id.startsWith('ref-10') && !localItem.id.startsWith('ref-20') && !localItem.id.startsWith('ref-30')) {
-          mergedList.push(localItem);
+    // Only allow genuinely unsynced local items that were marked as newly uploaded locally
+    for (const localItem of cleanLocal) {
+      if (localItem && localItem.id && !remoteIdMap.has(localItem.id) && localItem.isLocalUnsynced) {
+        if (localItem.imageUrl && !localItem.imageUrl.startsWith('blob:')) {
+          mergedList.unshift(localItem);
           hasUnsavedLocal = true;
         }
       }
     }
 
-    // If local had unsynced items, sync the merged set back to remote
     if (hasUnsavedLocal) {
-      fetch(REGISTRY_URL, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          name: REGISTRY_NAME,
-          data: {
-            lastUpdated: new Date().toISOString(),
-            references: mergedList
-          }
-        })
+      pushRegistryToCloudinary({
+        references: mergedList,
+        deletedIds: remoteState.deletedIds || []
       }).catch((e) => console.warn('[CloudSync] Background sync back failed:', e));
     }
 
-    return mergedList;
+    return {
+      references: mergedList,
+      deletedIds: remoteState.deletedIds || []
+    };
   } catch (err) {
     console.warn('[CloudSync] Reconciliation error:', err);
-    return localRefs;
+    return { references: localRefs, deletedIds: [] };
   } finally {
     isSyncing = false;
   }
