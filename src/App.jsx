@@ -30,6 +30,11 @@ import {
   isCloudinaryConfigured,
   fetchCloudinaryCategoryMedia
 } from './services/cloudinary';
+import {
+  fetchRemoteSharedReferences,
+  saveRemoteSharedReference,
+  deleteRemoteSharedReference
+} from './services/cloudSync';
 
 const STORAGE_KEY_REFS = 'collabs_minimal_refs_v2';
 const STORAGE_KEY_THEME = 'collabs_theme_v2';
@@ -111,36 +116,84 @@ export default function App() {
     };
   }, []);
 
-  // Sync from Cloudinary tag lists & Firestore
+  // Helper: Retrieve locally tracked deleted IDs to prevent ghost restoration
+  const getDeletedIds = () => {
+    try {
+      const raw = localStorage.getItem('collabs_deleted_ids_v1');
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch {
+      return new Set();
+    }
+  };
+
+  const markIdAsDeleted = (id) => {
+    try {
+      const current = getDeletedIds();
+      current.add(id);
+      localStorage.setItem('collabs_deleted_ids_v1', JSON.stringify([...current]));
+    } catch (e) {
+      console.debug('Failed to cache deleted id', e);
+    }
+  };
+
+  // Sync from Global Cloud Registry, Cloudinary tag lists & Firestore
   const syncLatestMedia = useCallback(async () => {
     setIsRefreshing(true);
-    let foundNew = false;
+    const deletedSet = getDeletedIds();
 
-    // 1. Check Cloudinary tag lists if enabled
-    if (cloudinaryReady) {
-      try {
+    try {
+      // 1. Fetch from Global Shared Cloud Registry (cross-browser / cross-device)
+      const remoteShared = await fetchRemoteSharedReferences();
+      if (Array.isArray(remoteShared)) {
+        setReferences((prev) => {
+          const remoteClean = remoteShared.filter(
+            (item) => item && item.id && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+          );
+          const remoteIdSet = new Set(remoteClean.map((r) => r.id));
+
+          // Keep any unpushed local items (e.g. uploaded moments ago)
+          const unpushedLocal = prev.filter(
+            (l) => l && l.id && !DUMMY_IDS.has(l.id) && !deletedSet.has(l.id) && !remoteIdSet.has(l.id)
+          );
+
+          // If there are unpushed items in local state, sync them up to the cloud registry
+          if (unpushedLocal.length > 0) {
+            unpushedLocal.forEach((item) => {
+              saveRemoteSharedReference(item).catch(() => {});
+            });
+          }
+
+          return [...unpushedLocal, ...remoteClean];
+        });
+      }
+
+      // 2. Also check Cloudinary tag lists if enabled in Cloudinary console
+      if (cloudinaryReady) {
         for (const cat of CATEGORIES) {
           const res = await fetchCloudinaryCategoryMedia(cat.id);
           if (res.success && res.items.length > 0) {
             setReferences((prev) => {
               const existingIds = new Set(prev.map((r) => r.id));
-              const newItems = res.items.filter((item) => !existingIds.has(item.id));
+              const newItems = res.items.filter(
+                (item) => !existingIds.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+              );
               if (newItems.length > 0) {
-                foundNew = true;
+                // Mirror newly discovered Cloudinary items to the global cloud registry
+                newItems.forEach((item) => saveRemoteSharedReference(item).catch(() => {}));
                 return [...newItems, ...prev];
               }
               return prev;
             });
           }
         }
-      } catch (err) {
-        console.debug('Cloudinary sync check:', err);
       }
+    } catch (err) {
+      console.warn('Sync check error:', err);
+    } finally {
+      const now = new Date();
+      setLastUpdatedText(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      setIsRefreshing(false);
     }
-
-    const now = new Date();
-    setLastUpdatedText(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    setIsRefreshing(false);
   }, [cloudinaryReady]);
 
   // Initial sync & interval polling when active
@@ -156,12 +209,12 @@ export default function App() {
     window.addEventListener('focus', syncLatestMedia);
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Light polling every 20 seconds while page is open
+    // Responsive light polling every 10 seconds while page is open
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         syncLatestMedia();
       }
-    }, 20000);
+    }, 10000);
 
     return () => {
       window.removeEventListener('focus', syncLatestMedia);
@@ -224,7 +277,7 @@ export default function App() {
     setReferences((prev) => [newRef, ...prev]);
     setLastUpdatedText('just now');
 
-    // 2. Broadcast to other open browser tabs
+    // 2. Broadcast to other open browser tabs on same device
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         const channel = new BroadcastChannel('collabs_realtime_bus');
@@ -235,7 +288,14 @@ export default function App() {
       }
     }
 
-    // 3. Save to Firebase Firestore if configured
+    // 3. Immediately persist to Global Shared Cloud Registry (cross-device sync)
+    try {
+      await saveRemoteSharedReference(newRef);
+    } catch (err) {
+      console.warn('Failed to sync to cloud registry:', err);
+    }
+
+    // 4. Save to Firebase Firestore if configured
     if (firebaseReady) {
       try {
         await saveReferenceToFirestore(newRef);
@@ -247,14 +307,17 @@ export default function App() {
 
   // Handle deleting reference
   const handleDeleteReference = async (id) => {
-    // 1. Immediate local state update
+    // 1. Mark ID as deleted in local storage to prevent phantom restore
+    markIdAsDeleted(id);
+
+    // 2. Immediate local state update
     setReferences((prev) => prev.filter((r) => r.id !== id));
     if (selectedReference?.id === id) {
       setSelectedReference(null);
     }
     setLastUpdatedText('just now');
 
-    // 2. Broadcast to other open browser tabs
+    // 3. Broadcast to other open browser tabs
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         const channel = new BroadcastChannel('collabs_realtime_bus');
@@ -265,7 +328,14 @@ export default function App() {
       }
     }
 
-    // 3. Delete from Firebase Firestore if configured
+    // 4. Delete from Global Shared Cloud Registry
+    try {
+      await deleteRemoteSharedReference(id);
+    } catch (err) {
+      console.warn('Failed to delete from cloud registry:', err);
+    }
+
+    // 5. Delete from Firebase Firestore if configured
     if (firebaseReady) {
       try {
         await deleteReferenceFromFirestore(id);
