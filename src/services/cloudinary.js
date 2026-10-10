@@ -90,8 +90,80 @@ export function getOptimizedMediaUrl(url, resourceType = 'image') {
 }
 
 /**
+ * Fetches globally deleted asset IDs recorded on Cloudinary via the collabs_deleted tag list.
+ * @returns {Promise<Set<string>>} Set of deleted clean IDs
+ */
+export async function fetchCloudinaryDeletedIds() {
+  if (!isCloudinaryConfigured()) return new Set();
+
+  try {
+    const res = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/collabs_deleted.json?t=${Date.now()}`, {
+      cache: 'no-store'
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.resources)) {
+        const deletedIds = data.resources.map((r) => {
+          return r.public_id.replace('collabs/deleted/', '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        });
+        return new Set(deletedIds);
+      }
+    }
+  } catch (err) {
+    console.debug('Failed to fetch deleted ids marker list:', err);
+  }
+  return new Set();
+}
+
+/**
+ * Persists a deletion marker to Cloudinary with tag collabs_deleted.
+ * Allows every browser in the world to immediately see that this reference was deleted.
+ * @param {string} id - Reference ID
+ * @param {string} publicId - Optional Cloudinary publicId
+ * @returns {Promise<boolean>}
+ */
+export async function markCloudinaryAssetAsDeleted(id, publicId = '') {
+  if (!isCloudinaryConfigured()) return false;
+
+  const target = (publicId || id || '')
+    .replace(/^cld-/, '')
+    .replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  if (!target) return false;
+
+  try {
+    const formData = new FormData();
+    // 1x1 transparent png marker
+    const base64Data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'image/png' });
+
+    formData.append('file', blob);
+    formData.append('upload_preset', UPLOAD_PRESET);
+    formData.append('tags', 'collabs_deleted');
+    formData.append('public_id', `collabs/deleted/${target}`);
+
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
+      method: 'POST',
+      body: formData
+    });
+
+    return res.ok;
+  } catch (err) {
+    console.warn('Failed to post deletion marker to Cloudinary:', err);
+    return false;
+  }
+}
+
+/**
  * Retrieves all media items directly from Cloudinary using the collabs tag list JSON.
- * Automatically classifies items into b2b, admin, and driver categories.
+ * Automatically classifies items into b2b, admin, and driver categories,
+ * and strips any assets marked as deleted.
  * @returns {Promise<{ success: boolean, items: Array, requiresSetting?: boolean }>}
  */
 export async function fetchAllCloudinaryMedia() {
@@ -102,7 +174,10 @@ export async function fetchAllCloudinaryMedia() {
   const items = [];
   let requiresSetting = false;
 
-  // 1. Fetch collabs global tag list for images
+  // 1. Fetch globally deleted IDs first
+  const globalDeletedSet = await fetchCloudinaryDeletedIds();
+
+  // 2. Fetch collabs global tag list for images
   try {
     const imgRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/collabs.json?t=${Date.now()}`, {
       cache: 'no-store'
@@ -114,8 +189,17 @@ export async function fetchAllCloudinaryMedia() {
       const data = await imgRes.json();
       if (Array.isArray(data.resources)) {
         data.resources.forEach((res) => {
-          // Skip 1x1 test pixels
+          // Skip 1x1 test pixels or marker images
           if (res.width <= 10 && res.height <= 10) return;
+          if (res.public_id && res.public_id.includes('collabs/deleted/')) return;
+
+          const cleanPublicId = res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+          const cleanId = `cld-${cleanPublicId}`;
+
+          // Check if marked as deleted
+          if (globalDeletedSet.has(cleanPublicId) || globalDeletedSet.has(cleanId)) {
+            return;
+          }
 
           let cat = 'b2b';
           const folder = (res.asset_folder || '').toLowerCase();
@@ -126,7 +210,7 @@ export async function fetchAllCloudinaryMedia() {
           else if (folder.includes('b2b') || pub.includes('b2b')) cat = 'b2b';
 
           items.push({
-            id: `cld-${res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+            id: cleanId,
             publicId: res.public_id,
             title: res.context?.custom?.caption || res.context?.custom?.title || `${cat.toUpperCase()} Reference`,
             category: cat,
@@ -142,7 +226,7 @@ export async function fetchAllCloudinaryMedia() {
     console.debug('Cloudinary collabs tag fetch error:', err);
   }
 
-  // 2. Also check video collabs tag list
+  // 3. Also check video collabs tag list
   try {
     const vidRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/video/list/collabs.json?t=${Date.now()}`, {
       cache: 'no-store'
@@ -152,6 +236,15 @@ export async function fetchAllCloudinaryMedia() {
       const data = await vidRes.json();
       if (Array.isArray(data.resources)) {
         data.resources.forEach((res) => {
+          if (res.public_id && res.public_id.includes('collabs/deleted/')) return;
+
+          const cleanPublicId = res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+          const cleanId = `cld-${cleanPublicId}`;
+
+          if (globalDeletedSet.has(cleanPublicId) || globalDeletedSet.has(cleanId)) {
+            return;
+          }
+
           let cat = 'b2b';
           const folder = (res.asset_folder || '').toLowerCase();
           const pub = (res.public_id || '').toLowerCase();
@@ -160,7 +253,7 @@ export async function fetchAllCloudinaryMedia() {
           else if (folder.includes('driver') || pub.includes('driver')) cat = 'driver';
 
           items.push({
-            id: `cld-${res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+            id: cleanId,
             publicId: res.public_id,
             title: res.context?.custom?.caption || res.context?.custom?.title || `${cat.toUpperCase()} Video Reference`,
             category: cat,

@@ -22,7 +22,8 @@ import {
 import {
   isCloudinaryConfigured,
   fetchAllCloudinaryMedia,
-  fetchCloudinaryCategoryMedia
+  fetchCloudinaryCategoryMedia,
+  markCloudinaryAssetAsDeleted
 } from './services/cloudinary';
 import {
   fetchRemoteSharedState,
@@ -131,96 +132,87 @@ export default function App() {
     }
   };
 
-  // Sync from Global Cloud Registry, Cloudinary tag lists & Firestore
-  const syncLatestMedia = useCallback(async () => {
-    setIsRefreshing(true);
+  // Sync from Cloudinary and CloudSync
+  const syncLatestMedia = useCallback(async ({ isSilent = false } = {}) => {
+    if (!isSilent) {
+      setIsRefreshing(true);
+    }
 
     try {
-      // 1. Fetch from Global Shared Cloud Registry (Cloudinary raw registry with deletedIds tracking)
-      const remoteState = await fetchRemoteSharedState();
-      const remoteRefs = remoteState.references || [];
-      const remoteDeleted = remoteState.deletedIds || [];
-
-      // Merge remote deleted IDs into local storage so they are permanently tracked
-      if (remoteDeleted.length > 0) {
-        remoteDeleted.forEach((id) => markIdAsDeleted(id));
-      }
       const deletedSet = getDeletedIds();
 
-      // Clean remote references against deleted IDs and dummy IDs
-      const cleanRemoteRefs = remoteRefs.filter(
-        (item) => item && item.id && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
-      );
-      const remoteIdSet = new Set(cleanRemoteRefs.map((r) => r.id));
-
-      setReferences((prev) => {
-        // Purge any references that have been deleted
-        const activePrev = prev.filter((item) => item && item.id && !deletedSet.has(item.id));
-
-        // Keep local items that were recently uploaded locally but haven't reached remote yet
-        const unpushedLocal = activePrev.filter(
-          (l) => l.isLocalUnsynced && !remoteIdSet.has(l.id)
-        );
-
-        // If there are unpushed items in local state, sync them up to the cloud registry
-        if (unpushedLocal.length > 0) {
-          unpushedLocal.forEach((item) => {
-            saveRemoteSharedReference(item).catch(() => {});
-          });
-        }
-
-        return [...unpushedLocal, ...cleanRemoteRefs];
-      });
-
-      // 2. Query Cloudinary tag lists directly for all media
+      // 1. Query Cloudinary directly for all team media (with Cloudinary deletedIds filtering)
       if (cloudinaryReady) {
         const res = await fetchAllCloudinaryMedia();
         setCloudinaryNeedsSetting(Boolean(res.requiresSetting));
 
-        if (res.success && res.items.length > 0) {
+        if (res.success && Array.isArray(res.items)) {
           setReferences((prev) => {
-            const existingIds = new Set(prev.map((r) => r.id));
-            const newItems = res.items.filter(
-              (item) => !existingIds.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+            const existingIdMap = new Map(prev.map((r) => [r.id, r]));
+
+            // Purge deleted items
+            const activePrev = prev.filter(
+              (item) => item && item.id && !deletedSet.has(item.id) && !DUMMY_IDS.has(item.id)
             );
-            if (newItems.length > 0) {
-              return [...newItems, ...prev];
+
+            // New items discovered from Cloudinary
+            const newCloudItems = res.items.filter(
+              (item) => !existingIdMap.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
+            );
+
+            // Stable diff check: if active list length equals prev length and no new items, do NOT touch state!
+            if (activePrev.length === prev.length && newCloudItems.length === 0) {
+              return prev; // Prevents unnecessary re-render and flickering
             }
-            return prev;
+
+            return [...newCloudItems, ...activePrev];
           });
         }
+      }
+
+      // 2. Also check CloudSync state for any shared deletedIds
+      try {
+        const remoteState = await fetchRemoteSharedState();
+        const remoteDeleted = remoteState.deletedIds || [];
+        if (remoteDeleted.length > 0) {
+          remoteDeleted.forEach((id) => markIdAsDeleted(id));
+        }
+      } catch (e) {
+        console.debug('Remote state sync error:', e);
       }
     } catch (err) {
       console.warn('Sync check error:', err);
     } finally {
+      if (!isSilent) {
+        setIsRefreshing(false);
+      }
       const now = new Date();
       setLastUpdatedText(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      setIsRefreshing(false);
     }
   }, [cloudinaryReady]);
 
-  // Initial sync & interval polling when active
+  // Initial sync & interval polling when active (completely silent - no refresh flicker)
   useEffect(() => {
-    syncLatestMedia();
+    syncLatestMedia({ isSilent: true });
 
-    // Re-check whenever tab becomes visible / focused
+    // Silent check whenever tab becomes visible / focused
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        syncLatestMedia();
+        syncLatestMedia({ isSilent: true });
       }
     };
-    window.addEventListener('focus', syncLatestMedia);
+    window.addEventListener('focus', handleVisibility);
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Responsive polling every 6 seconds while page is open and visible
+    // Silent background polling every 10 seconds while page is open (no flicker, no spinning icon)
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        syncLatestMedia();
+        syncLatestMedia({ isSilent: true });
       }
-    }, 6000);
+    }, 10000);
 
     return () => {
-      window.removeEventListener('focus', syncLatestMedia);
+      window.removeEventListener('focus', handleVisibility);
       document.removeEventListener('visibilitychange', handleVisibility);
       clearInterval(interval);
     };
@@ -291,6 +283,9 @@ export default function App() {
     // 1. Mark ID as deleted in local storage to prevent phantom restore
     markIdAsDeleted(id);
 
+    // Locate reference object to obtain its Cloudinary publicId
+    const targetRef = references.find((r) => r.id === id);
+
     // 2. Immediate local state update
     setReferences((prev) => prev.filter((r) => r.id !== id));
     if (selectedReference?.id === id) {
@@ -309,7 +304,14 @@ export default function App() {
       }
     }
 
-    // 4. Delete from Global Shared Cloud Registry (Cloudinary raw registry with deletedIds tracking)
+    // 4. Record deletion marker on Cloudinary so EVERY OTHER BROWSER knows it is deleted!
+    try {
+      await markCloudinaryAssetAsDeleted(id, targetRef?.publicId);
+    } catch (err) {
+      console.warn('Failed to record deletion on Cloudinary:', err);
+    }
+
+    // 5. Delete from Global Shared Cloud Registry
     try {
       await deleteRemoteSharedReference(id);
     } catch (err) {
@@ -403,7 +405,7 @@ export default function App() {
             {/* Refresh / Sync Button */}
             <button
               type="button"
-              onClick={syncLatestMedia}
+              onClick={() => syncLatestMedia({ isSilent: false })}
               disabled={isRefreshing}
               className="action-icon-btn"
               title={`Check for new uploads (Last updated: ${lastUpdatedText})`}
@@ -455,7 +457,7 @@ export default function App() {
             references={references}
             darkMode={darkMode}
             onSelectCategory={(catId) => setActiveCategory(catId)}
-            onRefresh={syncLatestMedia}
+            onRefresh={() => syncLatestMedia({ isSilent: false })}
             isRefreshing={isRefreshing}
             lastUpdatedText={lastUpdatedText}
           />
