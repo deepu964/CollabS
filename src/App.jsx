@@ -191,31 +191,9 @@ export default function App() {
     }
   }, [cloudinaryReady]);
 
-  // Initial sync & interval polling when active (completely silent - no refresh flicker)
+  // Initial sync on component mount
   useEffect(() => {
     syncLatestMedia({ isSilent: true });
-
-    // Silent check whenever tab becomes visible / focused
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        syncLatestMedia({ isSilent: true });
-      }
-    };
-    window.addEventListener('focus', handleVisibility);
-    document.addEventListener('visibilitychange', handleVisibility);
-
-    // Silent background polling every 10 seconds while page is open (no flicker, no spinning icon)
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        syncLatestMedia({ isSilent: true });
-      }
-    }, 10000);
-
-    return () => {
-      window.removeEventListener('focus', handleVisibility);
-      document.removeEventListener('visibilitychange', handleVisibility);
-      clearInterval(interval);
-    };
   }, [syncLatestMedia]);
 
   // Sync Dark Theme class
