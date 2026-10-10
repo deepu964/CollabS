@@ -115,6 +115,7 @@ export default function DirectUploadCard({ category, onUploadSuccess }) {
 
       const newRef = {
         id: publicId ? `cld-${publicId.replace(/[^a-zA-Z0-9_-]/g, '_')}` : `ref-${Date.now()}`,
+        publicId: publicId || '',
         title: finalTitle,
         category,
         imageUrl: finalMediaUrl.replace(/^http:\/\//i, 'https://'),

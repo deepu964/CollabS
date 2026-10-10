@@ -129,6 +129,7 @@ export default function UploadModal({
     try {
       let finalImageUrl = imageUrl.trim();
 
+      let uploadedPublicId = '';
       // If user uploaded a local image file
       if (selectedFile) {
         if (cloudinaryReady) {
@@ -138,6 +139,7 @@ export default function UploadModal({
             title: title.trim()
           });
           finalImageUrl = (uploadRes.url || '').replace(/^http:\/\//i, 'https://');
+          uploadedPublicId = uploadRes.publicId || '';
         } else {
           // Fallback to base64 if Cloudinary is not configured yet
           setStatusText('Processing local image...');
@@ -156,7 +158,10 @@ export default function UploadModal({
         `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
 
       await onAddReference({
-        id: `ref-${Date.now()}`,
+        id: uploadedPublicId
+          ? `cld-${uploadedPublicId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+          : `ref-${Date.now()}`,
+        publicId: uploadedPublicId,
         title: finalTitle,
         category,
         imageUrl: finalImageUrl.replace(/^http:\/\//i, 'https://'),

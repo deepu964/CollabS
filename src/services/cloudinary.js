@@ -90,7 +90,19 @@ export function getOptimizedMediaUrl(url, resourceType = 'image') {
 }
 
 /**
+ * Extracts Cloudinary publicId from a Cloudinary image or video URL.
+ * @param {string} url - Media URL
+ * @returns {string} publicId
+ */
+export function extractPublicIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const match = url.match(/\/upload\/(?:v\d+\/)?([^\.]+)/i);
+  return match ? match[1] : '';
+}
+
+/**
  * Fetches globally deleted asset IDs recorded on Cloudinary via the collabs_deleted tag list.
+ * Returns a Set containing all variations (raw, sanitized, and cld- prefixed) of deleted IDs.
  * @returns {Promise<Set<string>>} Set of deleted clean IDs
  */
 export async function fetchCloudinaryDeletedIds() {
@@ -104,10 +116,12 @@ export async function fetchCloudinaryDeletedIds() {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.resources)) {
-        const deletedIds = data.resources.map((r) => {
-          return r.public_id.replace('collabs/deleted/', '').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const deletedIds = data.resources.flatMap((r) => {
+          const raw = (r.public_id || '').replace('collabs/deleted/', '');
+          const clean = raw.replace(/[^a-zA-Z0-9_-]/g, '_');
+          return [raw, clean, `cld-${clean}`, `cld-${raw}`];
         });
-        return new Set(deletedIds);
+        return new Set(deletedIds.filter(Boolean));
       }
     }
   } catch (err) {
@@ -121,16 +135,22 @@ export async function fetchCloudinaryDeletedIds() {
  * Allows every browser in the world to immediately see that this reference was deleted.
  * @param {string} id - Reference ID
  * @param {string} publicId - Optional Cloudinary publicId
+ * @param {string} imageUrl - Optional media URL
  * @returns {Promise<boolean>}
  */
-export async function markCloudinaryAssetAsDeleted(id, publicId = '') {
+export async function markCloudinaryAssetAsDeleted(id, publicId = '', imageUrl = '') {
   if (!isCloudinaryConfigured()) return false;
 
-  const target = (publicId || id || '')
-    .replace(/^cld-/, '')
-    .replace(/[^a-zA-Z0-9_-]/g, '_');
+  let target = (publicId || '').replace(/^cld-/, '');
+  if (!target && imageUrl) {
+    target = extractPublicIdFromUrl(imageUrl);
+  }
+  if (!target && id) {
+    target = id.replace(/^cld-/, '');
+  }
 
-  if (!target) return false;
+  const cleanTarget = target.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (!cleanTarget) return false;
 
   try {
     const formData = new FormData();
@@ -146,7 +166,7 @@ export async function markCloudinaryAssetAsDeleted(id, publicId = '') {
     formData.append('file', blob);
     formData.append('upload_preset', UPLOAD_PRESET);
     formData.append('tags', 'collabs_deleted');
-    formData.append('public_id', `collabs/deleted/${target}`);
+    formData.append('public_id', `collabs/deleted/${cleanTarget}`);
 
     const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
       method: 'POST',
@@ -164,11 +184,11 @@ export async function markCloudinaryAssetAsDeleted(id, publicId = '') {
  * Retrieves all media items directly from Cloudinary using the collabs tag list JSON.
  * Automatically classifies items into b2b, admin, and driver categories,
  * and strips any assets marked as deleted.
- * @returns {Promise<{ success: boolean, items: Array, requiresSetting?: boolean }>}
+ * @returns {Promise<{ success: boolean, items: Array, deletedIds: Array, requiresSetting?: boolean }>}
  */
 export async function fetchAllCloudinaryMedia() {
   if (!isCloudinaryConfigured()) {
-    return { success: false, items: [], unconfigured: true };
+    return { success: false, items: [], deletedIds: [], unconfigured: true };
   }
 
   const items = [];
@@ -193,11 +213,17 @@ export async function fetchAllCloudinaryMedia() {
           if (res.width <= 10 && res.height <= 10) return;
           if (res.public_id && res.public_id.includes('collabs/deleted/')) return;
 
-          const cleanPublicId = res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+          const rawPublicId = res.public_id;
+          const cleanPublicId = rawPublicId.replace(/[^a-zA-Z0-9_-]/g, '_');
           const cleanId = `cld-${cleanPublicId}`;
 
           // Check if marked as deleted
-          if (globalDeletedSet.has(cleanPublicId) || globalDeletedSet.has(cleanId)) {
+          if (
+            globalDeletedSet.has(rawPublicId) ||
+            globalDeletedSet.has(cleanPublicId) ||
+            globalDeletedSet.has(cleanId) ||
+            globalDeletedSet.has(`cld-${rawPublicId}`)
+          ) {
             return;
           }
 
@@ -238,10 +264,16 @@ export async function fetchAllCloudinaryMedia() {
         data.resources.forEach((res) => {
           if (res.public_id && res.public_id.includes('collabs/deleted/')) return;
 
-          const cleanPublicId = res.public_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+          const rawPublicId = res.public_id;
+          const cleanPublicId = rawPublicId.replace(/[^a-zA-Z0-9_-]/g, '_');
           const cleanId = `cld-${cleanPublicId}`;
 
-          if (globalDeletedSet.has(cleanPublicId) || globalDeletedSet.has(cleanId)) {
+          if (
+            globalDeletedSet.has(rawPublicId) ||
+            globalDeletedSet.has(cleanPublicId) ||
+            globalDeletedSet.has(cleanId) ||
+            globalDeletedSet.has(`cld-${rawPublicId}`)
+          ) {
             return;
           }
 
@@ -270,8 +302,9 @@ export async function fetchAllCloudinaryMedia() {
   }
 
   return {
-    success: items.length > 0,
+    success: !requiresSetting,
     items,
+    deletedIds: Array.from(globalDeletedSet),
     requiresSetting
   };
 }

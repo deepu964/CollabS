@@ -25,11 +25,6 @@ import {
   fetchCloudinaryCategoryMedia,
   markCloudinaryAssetAsDeleted
 } from './services/cloudinary';
-import {
-  fetchRemoteSharedState,
-  saveRemoteSharedReference,
-  deleteRemoteSharedReference
-} from './services/cloudSync';
 
 const STORAGE_KEY_REFS = 'collabs_minimal_refs_v2';
 const STORAGE_KEY_THEME = 'collabs_theme_v2';
@@ -103,7 +98,12 @@ export default function App() {
         setLastUpdatedText('just now');
       } else if (event.data?.type === 'DELETE_REFERENCE') {
         const targetId = event.data.id;
-        setReferences((prev) => prev.filter((r) => r.id !== targetId));
+        const targetPubId = event.data.publicId;
+        if (targetId) markIdAsDeleted(targetId);
+        if (targetPubId) markIdAsDeleted(targetPubId);
+        setReferences((prev) =>
+          prev.filter((r) => r.id !== targetId && (!targetPubId || r.publicId !== targetPubId))
+        );
       }
     };
 
@@ -123,62 +123,77 @@ export default function App() {
   };
 
   const markIdAsDeleted = (id) => {
+    if (!id) return;
     try {
       const current = getDeletedIds();
       current.add(id);
+      const clean = id.replace(/^cld-/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+      current.add(clean);
+      current.add(`cld-${clean}`);
       localStorage.setItem('collabs_deleted_ids_v1', JSON.stringify([...current]));
     } catch (e) {
       console.debug('Failed to cache deleted id', e);
     }
   };
 
-  // Sync from Cloudinary and CloudSync
+  // Sync from Cloudinary
   const syncLatestMedia = useCallback(async ({ isSilent = false } = {}) => {
     if (!isSilent) {
       setIsRefreshing(true);
     }
 
     try {
-      const deletedSet = getDeletedIds();
-
-      // 1. Query Cloudinary directly for all team media (with Cloudinary deletedIds filtering)
+      // Query Cloudinary directly for all team media (with Cloudinary deletedIds filtering)
       if (cloudinaryReady) {
         const res = await fetchAllCloudinaryMedia();
         setCloudinaryNeedsSetting(Boolean(res.requiresSetting));
 
         if (res.success && Array.isArray(res.items)) {
+          // Ingest globally deleted IDs from Cloudinary into persistent local storage
+          if (Array.isArray(res.deletedIds) && res.deletedIds.length > 0) {
+            res.deletedIds.forEach((dId) => markIdAsDeleted(dId));
+          }
+          const allDeletedSet = getDeletedIds();
+
           setReferences((prev) => {
-            const existingIdMap = new Map(prev.map((r) => [r.id, r]));
+            const cloudItemIds = new Set(res.items.map((it) => it.id));
+            const cloudPublicIds = new Set(res.items.map((it) => it.publicId).filter(Boolean));
 
-            // Purge deleted items
-            const activePrev = prev.filter(
-              (item) => item && item.id && !deletedSet.has(item.id) && !DUMMY_IDS.has(item.id)
-            );
+            // Purge deleted items from prev
+            // Keep ONLY local items that are strictly unsynced uploads pending their first Cloudinary indexing
+            const pendingLocalUnsynced = prev.filter((item) => {
+              if (!item || !item.id) return false;
+              if (allDeletedSet.has(item.id)) return false;
+              if (item.publicId && allDeletedSet.has(item.publicId)) return false;
+              if (DUMMY_IDS.has(item.id)) return false;
+              return (
+                item.isLocalUnsynced &&
+                !cloudItemIds.has(item.id) &&
+                (!item.publicId || !cloudPublicIds.has(item.publicId))
+              );
+            });
 
-            // New items discovered from Cloudinary
-            const newCloudItems = res.items.filter(
-              (item) => !existingIdMap.has(item.id) && !DUMMY_IDS.has(item.id) && !deletedSet.has(item.id)
-            );
+            // Authoritative Cloudinary items (filtered against any deleted set)
+            const validCloudItems = res.items.filter((item) => {
+              if (!item || !item.id) return false;
+              if (allDeletedSet.has(item.id)) return false;
+              if (item.publicId && allDeletedSet.has(item.publicId)) return false;
+              return true;
+            });
 
-            // Stable diff check: if active list length equals prev length and no new items, do NOT touch state!
-            if (activePrev.length === prev.length && newCloudItems.length === 0) {
-              return prev; // Prevents unnecessary re-render and flickering
+            const reconciled = [...pendingLocalUnsynced, ...validCloudItems];
+
+            // Stable diff check: do not trigger re-render if references array is identical in IDs and length
+            if (
+              prev.length === reconciled.length &&
+              prev.every((item, idx) => item.id === reconciled[idx]?.id)
+            ) {
+              return prev; // Prevents unnecessary re-render and flickering!
             }
 
-            return [...newCloudItems, ...activePrev];
+            return reconciled;
           });
         }
-      }
-
-      // 2. Also check CloudSync state for any shared deletedIds
-      try {
-        const remoteState = await fetchRemoteSharedState();
-        const remoteDeleted = remoteState.deletedIds || [];
-        if (remoteDeleted.length > 0) {
-          remoteDeleted.forEach((id) => markIdAsDeleted(id));
-        }
-      } catch (e) {
-        console.debug('Remote state sync error:', e);
       }
     } catch (err) {
       console.warn('Sync check error:', err);
@@ -242,30 +257,21 @@ export default function App() {
         console.debug('BroadcastChannel error:', err);
       }
     }
-
-    // 3. Immediately persist to Global Shared Cloud Registry (cross-device/browser sync)
-    try {
-      const saved = await saveRemoteSharedReference(newRef);
-      if (saved) {
-        setReferences((prev) =>
-          prev.map((r) => (r.id === newRef.id ? { ...r, isLocalUnsynced: false } : r))
-        );
-      }
-    } catch (err) {
-      console.warn('Failed to sync to cloud registry:', err);
-    }
   };
 
   // Handle deleting reference
   const handleDeleteReference = async (id) => {
-    // 1. Mark ID as deleted in local storage to prevent phantom restore
-    markIdAsDeleted(id);
-
-    // Locate reference object to obtain its Cloudinary publicId
+    // 1. Locate reference object to obtain its Cloudinary publicId & imageUrl
     const targetRef = references.find((r) => r.id === id);
+    const pubId = targetRef?.publicId || '';
+    const imgUrl = targetRef?.imageUrl || '';
+
+    // Mark as deleted in local storage
+    markIdAsDeleted(id);
+    if (pubId) markIdAsDeleted(pubId);
 
     // 2. Immediate local state update
-    setReferences((prev) => prev.filter((r) => r.id !== id));
+    setReferences((prev) => prev.filter((r) => r.id !== id && (!pubId || r.publicId !== pubId)));
     if (selectedReference?.id === id) {
       setSelectedReference(null);
     }
@@ -275,7 +281,7 @@ export default function App() {
     if (typeof BroadcastChannel !== 'undefined') {
       try {
         const channel = new BroadcastChannel('collabs_realtime_bus');
-        channel.postMessage({ type: 'DELETE_REFERENCE', id });
+        channel.postMessage({ type: 'DELETE_REFERENCE', id, publicId: pubId });
         channel.close();
       } catch (err) {
         console.debug('BroadcastChannel error on delete:', err);
@@ -284,16 +290,9 @@ export default function App() {
 
     // 4. Record deletion marker on Cloudinary so EVERY OTHER BROWSER knows it is deleted!
     try {
-      await markCloudinaryAssetAsDeleted(id, targetRef?.publicId);
+      await markCloudinaryAssetAsDeleted(id, pubId, imgUrl);
     } catch (err) {
       console.warn('Failed to record deletion on Cloudinary:', err);
-    }
-
-    // 5. Delete from Global Shared Cloud Registry
-    try {
-      await deleteRemoteSharedReference(id);
-    } catch (err) {
-      console.warn('Failed to delete from cloud registry:', err);
     }
   };
 
