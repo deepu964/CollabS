@@ -51,6 +51,21 @@ export const CATEGORIES = [
     badgeBg: 'rgba(36, 138, 61, 0.08)',
     badgeBorder: 'rgba(36, 138, 61, 0.22)',
   },
+  {
+    id: 'docs',
+    name: 'Docs',
+    fullName: 'Project PRDs & Docs',
+    shortName: 'Docs',
+    tagline: 'PRD & Specifications Hub',
+    description: 'Central project requirements, architecture specifications, API documentation, and technical PRDs.',
+    icon: 'FileText',
+    color: '#EA580C', // Apple Orange/Amber
+    coverImage: '/cards/docs_cover_light.svg',
+    coverLightImage: '/cards/docs_cover_light.svg',
+    coverDarkImage: '/cards/docs_cover.svg',
+    badgeBg: 'rgba(234, 88, 12, 0.08)',
+    badgeBorder: 'rgba(234, 88, 12, 0.22)',
+  },
 ];
 
 export const COMMON_TAGS = [

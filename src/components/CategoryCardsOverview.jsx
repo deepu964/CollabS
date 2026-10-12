@@ -1,11 +1,19 @@
-import React from 'react';
-import { ArrowRight, Building2, ShieldCheck, Smartphone, UploadCloud, Plus } from 'lucide-react';
-import ProjectDocsSection from './ProjectDocsSection';
+import React, { useState, useEffect } from 'react';
+import {
+  ArrowRight,
+  Building2,
+  ShieldCheck,
+  Smartphone,
+  FileText,
+  UploadCloud,
+  Plus
+} from 'lucide-react';
 
 const ICON_MAP = {
   b2b: Building2,
   admin: ShieldCheck,
-  driver: Smartphone
+  driver: Smartphone,
+  docs: FileText
 };
 
 export default function CategoryCardsOverview({
@@ -15,61 +23,36 @@ export default function CategoryCardsOverview({
   onOpenUploadModal,
   darkMode = false
 }) {
+  const [docsCount, setDocsCount] = useState(0);
+
+  // Load count of uploaded docs from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('collabs_docs_library_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setDocsCount(parsed.length);
+        }
+      }
+    } catch (e) {
+      console.debug('Failed to read docs count', e);
+    }
+  }, []);
+
   return (
     <div className="cards-overview-container">
-      {/* Clean, Compact Header */}
-      <div className="overview-header-compact">
-        <div className="overview-heading-group">
-          <h1 className="overview-compact-title">Select a Pillar</h1>
-          <p className="overview-compact-sub">
-            Explore UI screens or contribute media to B2B, Admin, and Driver
-          </p>
-        </div>
-
-        {/* Quick Upload Action Strip */}
-        <div className="overview-quick-upload-strip">
-          <span className="quick-upload-label">
-            <UploadCloud size={14} />
-            <span>Upload Media to:</span>
-          </span>
-          <div className="quick-upload-buttons">
-            <button
-              type="button"
-              className="quick-upload-btn btn-b2b"
-              onClick={() => onOpenUploadModal && onOpenUploadModal('b2b')}
-              title="Upload image/video to B2B Portal"
-            >
-              <Building2 size={13} />
-              <span>+ B2B</span>
-            </button>
-            <button
-              type="button"
-              className="quick-upload-btn btn-admin"
-              onClick={() => onOpenUploadModal && onOpenUploadModal('admin')}
-              title="Upload image/video to Admin Console"
-            >
-              <ShieldCheck size={13} />
-              <span>+ Admin</span>
-            </button>
-            <button
-              type="button"
-              className="quick-upload-btn btn-driver"
-              onClick={() => onOpenUploadModal && onOpenUploadModal('driver')}
-              title="Upload image/video to Driver App"
-            >
-              <Smartphone size={13} />
-              <span>+ Driver</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* 3 Balanced Cards Grid */}
-      <div className="three-pillar-cards-grid">
+      {/* 2 by 2 Balanced Pillar Cards Grid (4 Cards Total) */}
+      <div className="four-pillar-cards-grid">
         {categories.map((cat, index) => {
           const Icon = ICON_MAP[cat.id] || Building2;
+          const isDocs = cat.id === 'docs';
           const catRefs = references.filter((r) => r.category === cat.id);
-          const count = catRefs.length;
+          const count = isDocs ? docsCount : catRefs.length;
+          const countUnit = isDocs
+            ? count === 1 ? 'document' : 'documents'
+            : count === 1 ? 'item' : 'items';
+
           const coverSrc = darkMode
             ? cat.coverDarkImage || cat.coverImage
             : cat.coverLightImage || cat.coverImage;
@@ -96,7 +79,7 @@ export default function CategoryCardsOverview({
                   loading="eager"
                 />
                 <div className="pillar-card-overlay-gradient" />
-                
+
                 {/* Floating Category Number */}
                 <div className="pillar-floating-badge">
                   <span>0{index + 1}</span>
@@ -119,22 +102,37 @@ export default function CategoryCardsOverview({
 
                 <div className="pillar-footer-row">
                   <span className="pillar-count-pill">
-                    {count} {count === 1 ? 'item' : 'items'}
+                    {count} {countUnit}
                   </span>
 
                   <div className="pillar-actions-group">
-                    <button
-                      type="button"
-                      className="pillar-card-upload-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (onOpenUploadModal) onOpenUploadModal(cat.id);
-                      }}
-                      title={`Upload image/video to ${cat.name}`}
-                    >
-                      <Plus size={12} />
-                      <span>Upload</span>
-                    </button>
+                    {!isDocs ? (
+                      <button
+                        type="button"
+                        className="pillar-card-upload-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onOpenUploadModal) onOpenUploadModal(cat.id);
+                        }}
+                        title={`Upload image/video to ${cat.name}`}
+                      >
+                        <Plus size={12} />
+                        <span>Upload</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="pillar-card-upload-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectCategory('docs');
+                        }}
+                        title="Upload doc or PRD"
+                      >
+                        <Plus size={12} />
+                        <span>Upload</span>
+                      </button>
+                    )}
 
                     <span className="pillar-enter-action">
                       <span>Open {cat.name}</span>
@@ -147,13 +145,6 @@ export default function CategoryCardsOverview({
           );
         })}
       </div>
-
-      {/* Directly below 3 Pillars: Project Documentation & PRD Section */}
-      <ProjectDocsSection
-        onQuickUploadMedia={onOpenUploadModal}
-        darkMode={darkMode}
-      />
     </div>
   );
 }
-

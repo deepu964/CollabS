@@ -63,11 +63,8 @@ export default function FullscreenLightbox({
   })() : '';
 
   const handleDelete = () => {
-    if (window.confirm(`Delete "${reference.title}"?`)) {
-      if (onDelete) {
-        onDelete(reference.id);
-      }
-      onClose();
+    if (onDelete) {
+      onDelete(reference.id, reference);
     }
   };
 

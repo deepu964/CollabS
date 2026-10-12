@@ -6,6 +6,9 @@ import MinimalCard from './components/MinimalCard';
 import FullscreenLightbox from './components/FullscreenLightbox';
 import WorkflowCanvas from './components/WorkflowCanvas';
 import UploadModal from './components/UploadModal';
+import DocsPillarView from './components/DocsPillarView';
+import DeleteConfirmModal from './components/DeleteConfirmModal';
+import NotificationToast from './components/NotificationToast';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
 import {
   Sun,
@@ -13,7 +16,9 @@ import {
   Building2,
   ShieldCheck,
   Smartphone,
+  FileText,
   ChevronLeft,
+  ChevronRight,
   RefreshCw,
   Layers,
   LayoutGrid,
@@ -34,7 +39,8 @@ const STORAGE_KEY_THEME = 'collabs_theme_v2';
 const ICON_MAP = {
   b2b: Building2,
   admin: ShieldCheck,
-  driver: Smartphone
+  driver: Smartphone,
+  docs: FileText
 };
 
 const DUMMY_IDS = new Set([
@@ -76,6 +82,20 @@ export default function App() {
 
   // Lightbox State
   const [selectedReference, setSelectedReference] = useState(null);
+
+  // Delete Confirmation Modal & Toast State
+  const [itemPendingDelete, setItemPendingDelete] = useState(null);
+  const [isDeletingMedia, setIsDeletingMedia] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => {
+      setToast(null);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // Global Upload Modal State (B2B, Admin, Driver)
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -246,8 +266,43 @@ export default function App() {
     return CATEGORIES.find((c) => c.id === activeCategory) || null;
   }, [activeCategory]);
 
-  // Handle adding new reference (from DirectUploadCard)
+  // Gallery Pagination: 9 cards per page (Page 1 has 1 Upload card + 8 items = 9 cards, Page 2+ has 9 items)
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset to page 1 on category change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeCategory]);
+
+  const totalPages = useMemo(() => {
+    if (activeReferences.length <= 8) return 1;
+    return 1 + Math.ceil((activeReferences.length - 8) / 9);
+  }, [activeReferences.length]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(Math.max(1, totalPages));
+    }
+  }, [currentPage, totalPages]);
+
+  const pagedReferences = useMemo(() => {
+    if (currentPage === 1) {
+      return activeReferences.slice(0, 8);
+    }
+    const startIndex = 8 + (currentPage - 2) * 9;
+    return activeReferences.slice(startIndex, startIndex + 9);
+  }, [activeReferences, currentPage]);
+
+  // Handle adding new reference (from DirectUploadCard & UploadModal)
   const handleAddReference = async (newRef) => {
+    if (!newRef) {
+      setToast({
+        type: 'error',
+        message: 'Could not add item: invalid data'
+      });
+      return;
+    }
+
     // 1. Optimistic local update with unsynced marker
     const optimisticRef = { ...newRef, isLocalUnsynced: true };
     setReferences((prev) => [optimisticRef, ...prev]);
@@ -263,42 +318,78 @@ export default function App() {
         console.debug('BroadcastChannel error:', err);
       }
     }
+
+    // 3. Success Toast Notification
+    const catObj = CATEGORIES.find((c) => c.id === newRef.category);
+    const catName = catObj?.name || newRef.category?.toUpperCase() || 'Gallery';
+    setToast({
+      type: 'success',
+      message: `Added "${newRef.title || 'Media item'}" to ${catName} successfully`
+    });
   };
 
-  // Handle deleting reference
-  const handleDeleteReference = async (id) => {
-    // 1. Locate reference object to obtain its Cloudinary publicId & imageUrl
-    const targetRef = references.find((r) => r.id === id);
+  // Prompt deletion with custom confirmation modal
+  const handleRequestDelete = (id, ref) => {
+    const targetRef = ref || references.find((r) => r.id === id);
+    if (targetRef) {
+      setItemPendingDelete(targetRef);
+    }
+  };
+
+  // Confirmed delete execution
+  const handleConfirmDelete = async () => {
+    if (!itemPendingDelete) return;
+    const targetRef = itemPendingDelete;
+    const id = targetRef.id;
     const pubId = targetRef?.publicId || '';
     const imgUrl = targetRef?.imageUrl || '';
 
-    // Mark as deleted in local storage
-    markIdAsDeleted(id);
-    if (pubId) markIdAsDeleted(pubId);
+    setIsDeletingMedia(true);
 
-    // 2. Immediate local state update
-    setReferences((prev) => prev.filter((r) => r.id !== id && (!pubId || r.publicId !== pubId)));
-    if (selectedReference?.id === id) {
-      setSelectedReference(null);
-    }
-    setLastUpdatedText('just now');
-
-    // 3. Broadcast to other open browser tabs
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        const channel = new BroadcastChannel('collabs_realtime_bus');
-        channel.postMessage({ type: 'DELETE_REFERENCE', id, publicId: pubId });
-        channel.close();
-      } catch (err) {
-        console.debug('BroadcastChannel error on delete:', err);
-      }
-    }
-
-    // 4. Record deletion marker on Cloudinary so EVERY OTHER BROWSER knows it is deleted!
     try {
-      await markCloudinaryAssetAsDeleted(id, pubId, imgUrl);
+      // 1. Mark as deleted in local storage
+      markIdAsDeleted(id);
+      if (pubId) markIdAsDeleted(pubId);
+
+      // 2. Immediate local state update
+      setReferences((prev) => prev.filter((r) => r.id !== id && (!pubId || r.publicId !== pubId)));
+      if (selectedReference?.id === id) {
+        setSelectedReference(null);
+      }
+      setLastUpdatedText('just now');
+
+      // 3. Broadcast to other open browser tabs
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const channel = new BroadcastChannel('collabs_realtime_bus');
+          channel.postMessage({ type: 'DELETE_REFERENCE', id, publicId: pubId });
+          channel.close();
+        } catch (err) {
+          console.debug('BroadcastChannel error on delete:', err);
+        }
+      }
+
+      // 4. Record deletion marker on Cloudinary so EVERY OTHER BROWSER knows it is deleted!
+      try {
+        await markCloudinaryAssetAsDeleted(id, pubId, imgUrl);
+      } catch (err) {
+        console.warn('Failed to record deletion on Cloudinary:', err);
+      }
+
+      // 5. Close confirmation modal and show Apple toast notification
+      setItemPendingDelete(null);
+      setToast({
+        type: 'delete',
+        message: `Deleted "${targetRef.title || 'Image'}" successfully`
+      });
     } catch (err) {
-      console.warn('Failed to record deletion on Cloudinary:', err);
+      console.error('Delete error:', err);
+      setToast({
+        type: 'error',
+        message: 'Could not delete item. Please try again.'
+      });
+    } finally {
+      setIsDeletingMedia(false);
     }
   };
 
@@ -328,7 +419,7 @@ export default function App() {
           </div>
 
           {/* If inside category, show Back button + Segmented Tabs */}
-          {activeCategoryObj ? (
+          {activeCategoryObj && (
             <nav className="minimal-segmented-nav" aria-label="Category Switcher">
               <button
                 type="button"
@@ -345,7 +436,15 @@ export default function App() {
               {CATEGORIES.map((cat) => {
                 const Icon = ICON_MAP[cat.id] || Building2;
                 const isActive = activeCategory === cat.id;
-                const count = references.filter((r) => r.category === cat.id).length;
+                let count = references.filter((r) => r.category === cat.id).length;
+                if (cat.id === 'docs') {
+                  try {
+                    const saved = localStorage.getItem('collabs_docs_library_v2');
+                    count = saved ? JSON.parse(saved).length : 0;
+                  } catch {
+                    count = 0;
+                  }
+                }
 
                 return (
                   <button
@@ -361,11 +460,6 @@ export default function App() {
                 );
               })}
             </nav>
-          ) : (
-            <div className="main-nav-pill-indicator">
-              <span className="pill-dot" />
-              <span>3 Product Pillars</span>
-            </div>
           )}
 
           {/* Right Header Actions */}
@@ -447,7 +541,7 @@ export default function App() {
 
       {/* Main Content Viewport */}
       <main className="minimal-main">
-        {/* VIEW 1: 3 Cards Main Page Navigation */}
+        {/* VIEW 1: 4 Cards Main Page Navigation */}
         {!activeCategory ? (
           <CategoryCardsOverview
             categories={CATEGORIES}
@@ -462,7 +556,13 @@ export default function App() {
             isRefreshing={isRefreshing}
             lastUpdatedText={lastUpdatedText}
           />
+        ) : activeCategory === 'docs' ? (
+          /* VIEW 2: Inside Docs & PRD Hub */
+          <DocsPillarView
+            onBackToOverview={() => setActiveCategory(null)}
+          />
         ) : (
+          /* VIEW 3: Inside the selected Category Area */
           /* VIEW 2: Inside the selected Category Area */
           <div className="category-area-viewport">
             {/* Section Header */}
@@ -522,23 +622,69 @@ export default function App() {
               />
             ) : (
               /* Category Grid: FIRST CARD is the Direct Upload Card! */
-              <div className="three-column-grid">
-                {/* Card 1: Inline zero-friction upload card */}
-                <DirectUploadCard
-                  category={activeCategory}
-                  onUploadSuccess={handleAddReference}
-                />
+              <>
+                <div className="three-column-grid">
+                  {/* Card 1: Inline zero-friction upload card shown on page 1 */}
+                  {currentPage === 1 && (
+                    <DirectUploadCard
+                      category={activeCategory}
+                      onUploadSuccess={handleAddReference}
+                      onUploadError={(errMsg) => setToast({ type: 'error', message: errMsg })}
+                    />
+                  )}
 
-                {/* Uploaded references in this category */}
-                {activeReferences.map((ref) => (
-                  <MinimalCard
-                    key={ref.id}
-                    reference={ref}
-                    onSelect={(r) => setSelectedReference(r)}
-                    onDelete={handleDeleteReference}
-                  />
-                ))}
-              </div>
+                  {/* Uploaded references in this category (up to 9 slots) */}
+                  {pagedReferences.map((ref) => (
+                    <MinimalCard
+                      key={ref.id}
+                      reference={ref}
+                      onSelect={(r) => setSelectedReference(r)}
+                      onDelete={handleRequestDelete}
+                    />
+                  ))}
+                </div>
+
+                {/* Apple Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="apple-pagination-bar" aria-label="Gallery pagination">
+                    <button
+                      type="button"
+                      className="pagination-btn"
+                      disabled={currentPage === 1}
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      aria-label="Previous page"
+                    >
+                      <ChevronLeft size={14} />
+                      <span>Prev</span>
+                    </button>
+
+                    <div className="pagination-pages-group">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                        <button
+                          key={pageNum}
+                          type="button"
+                          className={`pagination-number-pill ${currentPage === pageNum ? 'active' : ''}`}
+                          onClick={() => setCurrentPage(pageNum)}
+                          aria-label={`Page ${pageNum}`}
+                        >
+                          {pageNum}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="pagination-btn"
+                      disabled={currentPage === totalPages}
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      aria-label="Next page"
+                    >
+                      <span>Next</span>
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -551,15 +697,31 @@ export default function App() {
           allCategoryReferences={activeReferences}
           onClose={() => setSelectedReference(null)}
           onSelectReference={(ref) => setSelectedReference(ref)}
-          onDelete={handleDeleteReference}
+          onDelete={handleRequestDelete}
         />
       )}
+
+      {/* Delete Confirmation Modal for Images & Videos */}
+      <DeleteConfirmModal
+        isOpen={Boolean(itemPendingDelete)}
+        item={itemPendingDelete}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => !isDeletingMedia && setItemPendingDelete(null)}
+        isDeleting={isDeletingMedia}
+      />
+
+      {/* Floating Apple Toast Notification */}
+      <NotificationToast
+        toast={toast}
+        onClose={() => setToast(null)}
+      />
 
       {/* Global Media Upload Modal (B2B, Admin, Driver) */}
       <UploadModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
         onAddReference={handleAddReference}
+        onError={(errMsg) => setToast({ type: 'error', message: errMsg })}
         defaultCategory={uploadModalCategory}
       />
     </div>

@@ -56,6 +56,16 @@ export async function parseDocFile(file) {
       rawContent: text,
       format: 'text'
     };
+  } else if (extension === 'pdf') {
+    const blobUrl = URL.createObjectURL(file);
+    return {
+      title: defaultTitle,
+      html: '',
+      rawContent: `PDF Document: ${file.name}`,
+      format: 'pdf',
+      isPdf: true,
+      fileUrl: blobUrl
+    };
   } else {
     // Attempt text fallback
     const text = await file.text();

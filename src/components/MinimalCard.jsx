@@ -28,9 +28,7 @@ export default function MinimalCard({ reference, onSelect, onDelete }) {
 
   const handleDelete = (e) => {
     e.stopPropagation();
-    if (window.confirm(`Delete "${reference.title}"? This will remove it for everyone.`)) {
-      if (onDelete) onDelete(reference.id);
-    }
+    if (onDelete) onDelete(reference.id, reference);
   };
 
   const handleRetry = (e) => {

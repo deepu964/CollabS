@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { UploadCloud, Loader2, CheckCircle2, AlertCircle, X, Film, Image as ImageIcon } from 'lucide-react';
 import { uploadMediaToCloudinary, isCloudinaryConfigured } from '../services/cloudinary';
 
-export default function DirectUploadCard({ category, onUploadSuccess }) {
+export default function DirectUploadCard({ category, onUploadSuccess, onUploadError }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
   const [isVideo, setIsVideo] = useState(false);
@@ -132,7 +132,9 @@ export default function DirectUploadCard({ category, onUploadSuccess }) {
       handleClear();
     } catch (err) {
       console.error('Direct upload failed:', err);
-      setErrorMessage(err.message || 'Upload failed. Please check your network or Cloudinary preset.');
+      const msg = err.message || 'Upload failed. Please check your network or Cloudinary preset.';
+      setErrorMessage(msg);
+      if (onUploadError) onUploadError(msg);
     } finally {
       setIsUploading(false);
       setUploadStatus('');

@@ -37,6 +37,7 @@ export default function UploadModal({
   isOpen,
   onClose,
   onAddReference,
+  onError,
   defaultCategory = 'b2b'
 }) {
   const [title, setTitle] = useState('');
@@ -180,7 +181,9 @@ export default function UploadModal({
       onClose();
     } catch (err) {
       console.error('Submit error:', err);
-      setError(err.message || 'Failed to upload image. Please verify your Cloudinary settings.');
+      const msg = err.message || 'Failed to upload image. Please verify your Cloudinary settings.';
+      setError(msg);
+      if (onError) onError(msg);
     } finally {
       setIsSubmitting(false);
       setStatusText('');
