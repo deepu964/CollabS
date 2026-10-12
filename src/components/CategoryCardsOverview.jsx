@@ -1,5 +1,6 @@
 import React from 'react';
-import { ArrowRight, Building2, ShieldCheck, Smartphone } from 'lucide-react';
+import { ArrowRight, Building2, ShieldCheck, Smartphone, UploadCloud, Plus } from 'lucide-react';
+import ProjectDocsSection from './ProjectDocsSection';
 
 const ICON_MAP = {
   b2b: Building2,
@@ -11,14 +12,56 @@ export default function CategoryCardsOverview({
   categories,
   references,
   onSelectCategory,
+  onOpenUploadModal,
   darkMode = false
 }) {
   return (
     <div className="cards-overview-container">
       {/* Clean, Compact Header */}
       <div className="overview-header-compact">
-        <h1 className="overview-compact-title">Select a Pillar</h1>
-        <p className="overview-compact-sub">Choose a category to explore UI screens or contribute new media</p>
+        <div className="overview-heading-group">
+          <h1 className="overview-compact-title">Select a Pillar</h1>
+          <p className="overview-compact-sub">
+            Explore UI screens or contribute media to B2B, Admin, and Driver
+          </p>
+        </div>
+
+        {/* Quick Upload Action Strip */}
+        <div className="overview-quick-upload-strip">
+          <span className="quick-upload-label">
+            <UploadCloud size={14} />
+            <span>Upload Media to:</span>
+          </span>
+          <div className="quick-upload-buttons">
+            <button
+              type="button"
+              className="quick-upload-btn btn-b2b"
+              onClick={() => onOpenUploadModal && onOpenUploadModal('b2b')}
+              title="Upload image/video to B2B Portal"
+            >
+              <Building2 size={13} />
+              <span>+ B2B</span>
+            </button>
+            <button
+              type="button"
+              className="quick-upload-btn btn-admin"
+              onClick={() => onOpenUploadModal && onOpenUploadModal('admin')}
+              title="Upload image/video to Admin Console"
+            >
+              <ShieldCheck size={13} />
+              <span>+ Admin</span>
+            </button>
+            <button
+              type="button"
+              className="quick-upload-btn btn-driver"
+              onClick={() => onOpenUploadModal && onOpenUploadModal('driver')}
+              title="Upload image/video to Driver App"
+            >
+              <Smartphone size={13} />
+              <span>+ Driver</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* 3 Balanced Cards Grid */}
@@ -78,17 +121,39 @@ export default function CategoryCardsOverview({
                   <span className="pillar-count-pill">
                     {count} {count === 1 ? 'item' : 'items'}
                   </span>
-                  
-                  <span className="pillar-enter-action">
-                    <span>Open {cat.name}</span>
-                    <ArrowRight size={13} className="action-arrow" />
-                  </span>
+
+                  <div className="pillar-actions-group">
+                    <button
+                      type="button"
+                      className="pillar-card-upload-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onOpenUploadModal) onOpenUploadModal(cat.id);
+                      }}
+                      title={`Upload image/video to ${cat.name}`}
+                    >
+                      <Plus size={12} />
+                      <span>Upload</span>
+                    </button>
+
+                    <span className="pillar-enter-action">
+                      <span>Open {cat.name}</span>
+                      <ArrowRight size={13} className="action-arrow" />
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Directly below 3 Pillars: Project Documentation & PRD Section */}
+      <ProjectDocsSection
+        onQuickUploadMedia={onOpenUploadModal}
+        darkMode={darkMode}
+      />
     </div>
   );
 }
+

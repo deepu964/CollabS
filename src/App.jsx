@@ -5,6 +5,7 @@ import DirectUploadCard from './components/DirectUploadCard';
 import MinimalCard from './components/MinimalCard';
 import FullscreenLightbox from './components/FullscreenLightbox';
 import WorkflowCanvas from './components/WorkflowCanvas';
+import UploadModal from './components/UploadModal';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
 import {
   Sun,
@@ -17,7 +18,8 @@ import {
   Layers,
   LayoutGrid,
   Share2,
-  X
+  X,
+  Plus
 } from 'lucide-react';
 import {
   isCloudinaryConfigured,
@@ -74,6 +76,10 @@ export default function App() {
 
   // Lightbox State
   const [selectedReference, setSelectedReference] = useState(null);
+
+  // Global Upload Modal State (B2B, Admin, Driver)
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadModalCategory, setUploadModalCategory] = useState('b2b');
 
   // Sync state
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -364,6 +370,20 @@ export default function App() {
 
           {/* Right Header Actions */}
           <div className="minimal-header-actions">
+            {/* Quick Upload Screen Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setUploadModalCategory(activeCategory || 'b2b');
+                setIsUploadModalOpen(true);
+              }}
+              className="header-upload-pill-btn"
+              title="Upload UI image or video to B2B, Admin, or Driver"
+            >
+              <Plus size={13} />
+              <span>Upload Media</span>
+            </button>
+
             {/* Live Cloud Status */}
             <div
               className={`cloud-status-chip ${cloudinaryReady ? 'synced' : 'local'}`}
@@ -434,6 +454,10 @@ export default function App() {
             references={references}
             darkMode={darkMode}
             onSelectCategory={(catId) => setActiveCategory(catId)}
+            onOpenUploadModal={(catId) => {
+              setUploadModalCategory(catId || 'b2b');
+              setIsUploadModalOpen(true);
+            }}
             onRefresh={() => syncLatestMedia({ isSilent: false })}
             isRefreshing={isRefreshing}
             lastUpdatedText={lastUpdatedText}
@@ -530,6 +554,14 @@ export default function App() {
           onDelete={handleDeleteReference}
         />
       )}
+
+      {/* Global Media Upload Modal (B2B, Admin, Driver) */}
+      <UploadModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onAddReference={handleAddReference}
+        defaultCategory={uploadModalCategory}
+      />
     </div>
   );
 }
