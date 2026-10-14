@@ -337,12 +337,14 @@ export async function fetchCloudinaryRawDocs() {
         data.resources
           .filter((item) => item.public_id && item.public_id.includes('collabs/docs/'))
           .forEach((item) => {
-            const fileName = (item.public_id || '').split('/').pop() || 'document';
-            const ext = fileName.split('.').pop()?.toLowerCase() || 'docx';
+            const rawFileName = (item.public_id || '').split('/').pop() || 'document';
+            const ext = rawFileName.split('.').pop()?.toLowerCase() || 'docx';
             const title =
               item.context?.custom?.title ||
               item.context?.custom?.caption ||
-              fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+              rawFileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+            const isHash = /^[a-z0-9]{15,}$/i.test(rawFileName.replace(/\.[^/.]+$/, ''));
+            const fileName = isHash && title ? `${title}.${ext}` : rawFileName;
             const fileUrl = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/v${item.version}/${item.public_id}`;
             const d = item.created_at ? new Date(item.created_at) : new Date();
             const uploadedAt = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -379,11 +381,13 @@ export async function fetchCloudinaryRawDocs() {
       if (Array.isArray(imgData.resources)) {
         imgData.resources.forEach((item) => {
           if (!item.public_id || seenIds.has(item.public_id)) return;
-          const fileName = (item.public_id || '').split('/').pop() || 'document';
+          const rawFileName = (item.public_id || '').split('/').pop() || 'document';
           const title =
             item.context?.custom?.title ||
             item.context?.custom?.caption ||
-            fileName.replace(/[-_]/g, ' ');
+            rawFileName.replace(/[-_]/g, ' ');
+          const isHash = /^[a-z0-9]{15,}$/i.test(rawFileName.replace(/\.[^/.]+$/, ''));
+          const fileName = isHash && title ? `${title}.pdf` : (rawFileName.endsWith('.pdf') ? rawFileName : `${rawFileName}.pdf`);
           const d = item.created_at ? new Date(item.created_at) : new Date();
           const uploadedAt = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
           const docId = `cld-doc-${item.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -393,7 +397,7 @@ export async function fetchCloudinaryRawDocs() {
             id: docId,
             publicId: item.public_id,
             title,
-            fileName: fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`,
+            fileName,
             format: 'pdf',
             isPdf: true,
             fileUrl: `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/v${item.version}/${item.public_id}.pdf`,

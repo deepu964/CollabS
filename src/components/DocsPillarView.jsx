@@ -668,13 +668,9 @@ export default function DocsPillarView({ onBackToOverview }) {
                 </button>
               </div>
 
-              {/* Card Caption (Same as MinimalCard) */}
+              {/* Card Caption */}
               <div className="card-caption">
                 <h3 className="card-caption-title">{docItem.title}</h3>
-                <div className="card-caption-meta">
-                  <span className="caption-domain">{docItem.fileName}</span>
-                  <span className="caption-date">{docItem.uploadedAt}</span>
-                </div>
               </div>
             </div>
           );
