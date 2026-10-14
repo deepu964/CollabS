@@ -257,6 +257,57 @@ let isDocsSyncing = false;
 
 /**
  * Fetch complete shared docs state (documents + deleted IDs) from Cloudinary CDN registry.
+/**
+ * Fetches real document assets directly from Cloudinary raw tag list (collabs).
+ * Guarantees cross-browser discovery even if raw registry overwrite is blocked.
+ * @returns {Promise<Array>}
+ */
+export async function fetchCloudinaryRawDocs() {
+  if (!CLOUD_NAME) return [];
+  try {
+    const res = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/raw/list/collabs.json?t=${Date.now()}`, {
+      cache: 'no-store'
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.resources)) {
+        return data.resources
+          .filter((item) => item.public_id && item.public_id.includes('collabs/docs/'))
+          .map((item) => {
+            const fileName = (item.public_id || '').split('/').pop() || 'document';
+            const ext = fileName.split('.').pop()?.toLowerCase() || 'docx';
+            const title =
+              item.context?.custom?.title ||
+              item.context?.custom?.caption ||
+              fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+            const fileUrl = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/v${item.version}/${item.public_id}`;
+            const d = item.created_at ? new Date(item.created_at) : new Date();
+            const uploadedAt = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+            return {
+              id: `cld-doc-${item.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+              publicId: item.public_id,
+              title,
+              fileName,
+              format: ext,
+              isPdf: ext === 'pdf',
+              fileUrl,
+              uploadedAt,
+              fileSize: 'Cloud Doc',
+              content: '',
+              isCloudinarySource: true
+            };
+          });
+      }
+    }
+  } catch (err) {
+    console.debug('[CloudSync] Failed to fetch raw docs tag list:', err);
+  }
+  return [];
+}
+
+/**
+ * Fetch complete shared docs state (documents + deleted IDs) from Cloudinary CDN registry & tag list.
  * @returns {Promise<{ docs: Array, deletedIds: Array, lastUpdated: string }>}
  */
 export async function fetchRemoteSharedDocsState() {
@@ -264,6 +315,9 @@ export async function fetchRemoteSharedDocsState() {
   const timeoutId = setTimeout(() => controller.abort(), 7000);
 
   try {
+    // 1. Fetch raw list tag items directly from Cloudinary
+    const rawTagDocs = await fetchCloudinaryRawDocs();
+
     const cacheBuster = Date.now();
     const res = await fetch(`${DOCS_REGISTRY_READ_URL}?t=${cacheBuster}`, {
       method: 'GET',
@@ -276,38 +330,49 @@ export async function fetchRemoteSharedDocsState() {
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      if (res.status === 404) {
-        // Registry does not exist yet on Cloudinary
-        return { docs: [], deletedIds: [], lastUpdated: new Date().toISOString() };
-      }
-      console.debug(`[CloudSync] Docs registry returned status ${res.status}`);
-      return { docs: [], deletedIds: [], lastUpdated: '' };
+    let rawDocs = [];
+    let deletedList = [];
+
+    if (res.ok) {
+      const data = await res.json();
+      rawDocs = Array.isArray(data?.docs) ? data.docs : [];
+      deletedList = Array.isArray(data?.deletedIds) ? data.deletedIds : [];
     }
 
-    const data = await res.json();
-    const rawDocs = Array.isArray(data?.docs) ? data.docs : [];
-    const deletedList = Array.isArray(data?.deletedIds) ? data.deletedIds : [];
     const deletedSet = new Set(deletedList);
 
-    const sanitizedDocs = rawDocs
-      .filter((d) => d && d.id && !deletedSet.has(d.id))
-      .map((d) => ({
-        ...d,
-        fileUrl: (d.fileUrl || '').replace(/^http:\/\//i, 'https://')
-      }));
+    // Combine registry docs and tag list docs, deduplicating by publicId or id
+    const docMap = new Map();
+
+    rawDocs.forEach((d) => {
+      if (d && d.id && !deletedSet.has(d.id)) {
+        docMap.set(d.publicId || d.id, {
+          ...d,
+          fileUrl: (d.fileUrl || '').replace(/^http:\/\//i, 'https://')
+        });
+      }
+    });
+
+    rawTagDocs.forEach((d) => {
+      if (d && d.publicId && !deletedSet.has(d.publicId) && !deletedSet.has(d.id)) {
+        if (!docMap.has(d.publicId)) {
+          docMap.set(d.publicId, d);
+        }
+      }
+    });
 
     return {
-      docs: sanitizedDocs,
+      docs: Array.from(docMap.values()),
       deletedIds: deletedList,
-      lastUpdated: data?.lastUpdated || new Date().toISOString()
+      lastUpdated: new Date().toISOString()
     };
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name !== 'AbortError') {
       console.debug('[CloudSync] Docs registry fetch error:', err.message);
     }
-    return { docs: [], deletedIds: [], lastUpdated: '' };
+    const rawTagDocs = await fetchCloudinaryRawDocs();
+    return { docs: rawTagDocs, deletedIds: [], lastUpdated: '' };
   }
 }
 

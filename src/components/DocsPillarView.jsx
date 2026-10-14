@@ -178,6 +178,29 @@ export default function DocsPillarView({ onBackToOverview }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedDoc]);
 
+  // Load content on demand when opening a cloud-synced markdown/text document
+  useEffect(() => {
+    if (selectedDoc && !selectedDoc.content && selectedDoc.fileUrl && !selectedDoc.isPdf) {
+      fetch(selectedDoc.fileUrl)
+        .then((res) => (res.ok ? res.text() : ''))
+        .then((text) => {
+          if (text) {
+            setSelectedDoc((prev) =>
+              prev && prev.id === selectedDoc.id
+                ? { ...prev, content: text, html: renderMarkdown(text) }
+                : prev
+            );
+            setDocs((prevList) =>
+              prevList.map((d) =>
+                d.id === selectedDoc.id ? { ...d, content: text, html: renderMarkdown(text) } : d
+              )
+            );
+          }
+        })
+        .catch((e) => console.debug('Failed to fetch remote doc content:', e));
+    }
+  }, [selectedDoc]);
+
   const handleProcessFile = async (file) => {
     if (!file) return;
 
