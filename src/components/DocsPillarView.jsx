@@ -6,7 +6,6 @@ import {
   Trash2,
   X,
   Loader2,
-  Calendar,
   AlertCircle,
   Copy,
   Check,
@@ -23,8 +22,11 @@ import {
   reconcileDocs,
   saveRemoteSharedDoc,
   deleteRemoteSharedDoc,
-  fetchRemoteSharedDocs
+  getDeletedDocIds,
+  markDocIdAsDeleted
 } from '../services/cloudSync';
+import { saveDocBlob, getDocBlob, deleteDocBlob } from '../services/docStorage';
+import PdfReaderView from './PdfReaderView';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import NotificationToast from './NotificationToast';
 
@@ -79,15 +81,24 @@ CollabS is a real-time collaborative operations platform connecting wholesale en
 export default function DocsPillarView({ onBackToOverview }) {
   const [docs, setDocs] = useState(() => {
     try {
+      const deletedSet = getDeletedDocIds();
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter(
+            (d) =>
+              d &&
+              !deletedSet.has(d.id) &&
+              (!d.publicId || !deletedSet.has(d.publicId))
+          );
+        }
       }
     } catch (e) {
       console.warn('Failed to parse saved docs', e);
     }
-    return INITIAL_DOCS;
+    const initialDeleted = getDeletedDocIds();
+    return INITIAL_DOCS.filter((d) => !initialDeleted.has(d.id));
   });
 
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -105,7 +116,7 @@ export default function DocsPillarView({ onBackToOverview }) {
     setIsSyncingCloud(true);
     try {
       const result = await reconcileDocs(docs, INITIAL_DOCS);
-      if (Array.isArray(result?.docs) && result.docs.length > 0) {
+      if (Array.isArray(result?.docs)) {
         setDocs(result.docs);
         if (showToast) {
           setToast({
@@ -121,12 +132,38 @@ export default function DocsPillarView({ onBackToOverview }) {
     }
   };
 
+  // Multi-tab real-time sync for deletions
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel('collabs_realtime_bus');
+
+    channel.onmessage = (event) => {
+      if (event.data?.type === 'DELETE_DOC') {
+        const targetId = event.data.id;
+        const targetPubId = event.data.publicId;
+        markDocIdAsDeleted(targetId, targetPubId);
+        setDocs((prev) =>
+          prev.filter((d) => d.id !== targetId && (!targetPubId || d.publicId !== targetPubId))
+        );
+        setSelectedDoc((curr) => {
+          if (!curr) return null;
+          if (curr.id === targetId || (targetPubId && curr.publicId === targetPubId)) {
+            return null;
+          }
+          return curr;
+        });
+      }
+    };
+
+    return () => channel.close();
+  }, []);
+
   // Reconcile with Cloudinary docs registry on initial mount
   useEffect(() => {
     let isMounted = true;
     reconcileDocs(docs, INITIAL_DOCS)
       .then(({ docs: reconciledDocs }) => {
-        if (isMounted && Array.isArray(reconciledDocs) && reconciledDocs.length > 0) {
+        if (isMounted && Array.isArray(reconciledDocs)) {
           setDocs(reconciledDocs);
         }
       })
@@ -178,9 +215,25 @@ export default function DocsPillarView({ onBackToOverview }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedDoc]);
 
-  // Load content on demand when opening a cloud-synced markdown/text document
+  // Load content on demand when opening a cloud-synced markdown/text document or retrieve PDF blob
   useEffect(() => {
-    if (selectedDoc && !selectedDoc.content && selectedDoc.fileUrl && !selectedDoc.isPdf) {
+    if (!selectedDoc) return;
+
+    // Check IndexedDB if PDF is missing blobUrl
+    if (selectedDoc.isPdf && !selectedDoc.blobUrl && selectedDoc.id) {
+      let isMounted = true;
+      getDocBlob(selectedDoc.id).then((blob) => {
+        if (isMounted && blob) {
+          const url = URL.createObjectURL(blob);
+          setSelectedDoc((prev) => (prev && prev.id === selectedDoc.id ? { ...prev, blobUrl: url } : prev));
+        }
+      });
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    if (!selectedDoc.content && selectedDoc.fileUrl && !selectedDoc.isPdf) {
       fetch(selectedDoc.fileUrl)
         .then((res) => (res.ok ? res.text() : ''))
         .then((text) => {
@@ -231,24 +284,34 @@ export default function DocsPillarView({ onBackToOverview }) {
       // 1. Upload original document file to Cloudinary so it is permanently accessible across all browsers
       let cloudUrl = '';
       let cloudPublicId = '';
+      let cloudPages = 1;
       try {
         const uploadRes = await uploadDocToCloudinary(file, { title: parsed.title });
         if (uploadRes?.url) {
           cloudUrl = uploadRes.url;
           cloudPublicId = uploadRes.publicId;
+          cloudPages = uploadRes.pages || 1;
         }
       } catch (uploadErr) {
         console.warn('[Docs] Cloudinary doc upload fallback:', uploadErr.message);
       }
 
+      const docId = `doc-${Date.now()}`;
+      const blobUrl = parsed.isPdf ? URL.createObjectURL(file) : '';
+
+      // Save raw file into IndexedDB for 100% binary persistence locally
+      saveDocBlob(docId, file).catch(() => {});
+
       const newDocItem = {
-        id: `doc-${Date.now()}`,
+        id: docId,
         title: parsed.title,
         fileName: file.name,
         format: parsed.format,
         isPdf: Boolean(parsed.isPdf),
-        fileUrl: cloudUrl || parsed.fileUrl || '',
+        fileUrl: cloudUrl || (parsed.isPdf ? '' : parsed.fileUrl || ''),
         publicId: cloudPublicId,
+        blobUrl: blobUrl,
+        pageCount: cloudPages,
         uploadedAt: dateFormatted,
         fileSize: sizeStr,
         content: parsed.rawContent,
@@ -303,15 +366,54 @@ export default function DocsPillarView({ onBackToOverview }) {
     setDocPendingDelete(doc);
   };
 
-  const handleConfirmDeleteDoc = () => {
+  const handleConfirmDeleteDoc = async () => {
     if (!docPendingDelete) return;
     const target = docPendingDelete;
-    setDocs((prev) => prev.filter((d) => d.id !== target.id));
-    deleteRemoteSharedDoc(target.id).catch((e) =>
-      console.warn('[Docs] Failed to delete doc from cloud registry:', e)
+    const targetId = target.id;
+    const targetPubId = target.publicId || '';
+
+    // 1. Permanently mark deleted in local storage
+    markDocIdAsDeleted(targetId, targetPubId, target.fileName);
+
+    // 2. Delete raw binary from IndexedDB
+    deleteDocBlob(targetId).catch(() => {});
+
+    // 3. Immediately update state and synchronously write to localStorage
+    const updatedDocs = docs.filter(
+      (d) => d.id !== targetId && (!targetPubId || d.publicId !== targetPubId)
     );
-    if (selectedDoc?.id === target.id) setSelectedDoc(null);
+    setDocs(updatedDocs);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedDocs));
+    } catch (e) {}
+
+    if (selectedDoc?.id === targetId || (targetPubId && selectedDoc?.publicId === targetPubId)) {
+      setSelectedDoc(null);
+    }
     setDocPendingDelete(null);
+
+    // 4. Broadcast deletion to all open browser tabs
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const channel = new BroadcastChannel('collabs_realtime_bus');
+        channel.postMessage({
+          type: 'DELETE_DOC',
+          id: targetId,
+          publicId: targetPubId
+        });
+        channel.close();
+      } catch (err) {
+        console.debug('BroadcastChannel error on doc delete:', err);
+      }
+    }
+
+    // 5. Post permanent deletion marker to Cloudinary
+    try {
+      await deleteRemoteSharedDoc(targetId, targetPubId, target.fileUrl);
+    } catch (e) {
+      console.warn('[Docs] Failed to delete doc from cloud:', e);
+    }
+
     setToast({
       type: 'delete',
       message: `Deleted "${target.title || target.fileName || 'Document'}" successfully`
@@ -332,18 +434,45 @@ export default function DocsPillarView({ onBackToOverview }) {
   const handleDownload = () => {
     if (!selectedDoc) return;
 
-    if (selectedDoc.fileUrl) {
+    // 1. If local binary blob exists (from upload or IndexedDB), download exact original file
+    if (selectedDoc.blobUrl) {
       const link = document.createElement('a');
-      link.href = selectedDoc.fileUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.download = selectedDoc.fileName || `document.${selectedDoc.format || 'pdf'}`;
+      link.href = selectedDoc.blobUrl;
+      link.download = selectedDoc.fileName || `${selectedDoc.title || 'document'}.${selectedDoc.format || 'pdf'}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       return;
     }
 
+    // 2. If it's a PDF on Cloudinary, download high-res page image attachment
+    if (selectedDoc.isPdf && selectedDoc.publicId) {
+      const downloadUrl = `https://res.cloudinary.com/dtaz4vhxh/image/upload/fl_attachment/pg_1/${selectedDoc.publicId}.png`;
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = (selectedDoc.fileName || 'document').replace(/\.pdf$/i, '') + '.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
+    // 3. For markdown or text files with fileUrl
+    if (selectedDoc.fileUrl) {
+      const link = document.createElement('a');
+      link.href = selectedDoc.fileUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = selectedDoc.fileName || `document.${selectedDoc.format || 'txt'}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
+    // 4. Markdown content download fallback
     const blob = new Blob([selectedDoc.content || ''], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -464,7 +593,7 @@ export default function DocsPillarView({ onBackToOverview }) {
         {pagedDocs.map((docItem) => {
           const badge = getFormatBadge(docItem.format);
           const cleanExcerpt = (docItem.content || '')
-            .replace(/[#*`_>\[\]]/g, ' ')
+            .replace(/[#*`_>[\]]/g, ' ')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 110);
@@ -677,31 +806,16 @@ export default function DocsPillarView({ onBackToOverview }) {
               </div>
             </div>
 
-            {/* Details Content Scroll Area */}
-            <div className="fullsize-content-scroll">
-              {selectedDoc.isPdf ? (
-                <div className="fullsize-pdf-container">
-                  {selectedDoc.fileUrl ? (
-                    <iframe
-                      src={selectedDoc.fileUrl}
-                      title={selectedDoc.title}
-                      className="fullsize-pdf-frame"
-                    />
-                  ) : (
-                    <div className="pdf-fallback-box">
-                      <FileText size={48} />
-                      <p>PDF Document: {selectedDoc.fileName}</p>
-                      <button
-                        type="button"
-                        className="doc-action-btn primary"
-                        onClick={handleDownload}
-                      >
-                        Download PDF to View
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
+            {/* Details Content Area */}
+            {selectedDoc.isPdf ? (
+              <div className="fullsize-pdf-viewport">
+                <PdfReaderView
+                  doc={selectedDoc}
+                  onDownload={handleDownload}
+                />
+              </div>
+            ) : (
+              <div className="fullsize-content-scroll">
                 <div
                   className="prd-markdown-body fullsize-reader-body"
                   dangerouslySetInnerHTML={{
@@ -710,8 +824,8 @@ export default function DocsPillarView({ onBackToOverview }) {
                       (selectedDoc.content ? renderMarkdown(selectedDoc.content) : '')
                   }}
                 />
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}

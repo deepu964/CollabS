@@ -6,6 +6,8 @@
  * and references deleted from any browser are permanently purged across everyone.
  */
 
+import { fetchCloudinaryDeletedIds, markCloudinaryAssetAsDeleted } from './cloudinary';
+
 const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
 const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
 const REGISTRY_PUBLIC_ID = 'collabs_global_media_registry_v2';
@@ -258,12 +260,73 @@ let isDocsSyncing = false;
 /**
  * Fetch complete shared docs state (documents + deleted IDs) from Cloudinary CDN registry.
 /**
- * Fetches real document assets directly from Cloudinary raw tag list (collabs).
- * Guarantees cross-browser discovery even if raw registry overwrite is blocked.
+ * Retrieve local deleted document IDs set.
+ */
+export function getDeletedDocIds() {
+  try {
+    const raw = localStorage.getItem('collabs_deleted_docs_v1');
+    const set1 = raw ? new Set(JSON.parse(raw)) : new Set();
+    const rawAll = localStorage.getItem('collabs_deleted_ids_v1');
+    if (rawAll) {
+      JSON.parse(rawAll).forEach((id) => set1.add(id));
+    }
+    return set1;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Record a document ID as permanently deleted in local persistent storage.
+ */
+export function markDocIdAsDeleted(id, publicId = '', fileName = '') {
+  try {
+    const current = getDeletedDocIds();
+    const targets = [id, publicId, fileName].filter(Boolean);
+    targets.forEach((t) => {
+      current.add(t);
+      const clean = t.replace(/^cld-doc-/, '').replace(/^cld-/, '').replace(/^doc-/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+      current.add(clean);
+      current.add(`cld-doc-${clean}`);
+      current.add(`cld-${clean}`);
+      current.add(`doc-${clean}`);
+    });
+    localStorage.setItem('collabs_deleted_docs_v1', JSON.stringify([...current]));
+    localStorage.setItem('collabs_deleted_ids_v1', JSON.stringify([...current]));
+  } catch (e) {
+    console.debug('Failed to mark doc ID as deleted:', e);
+  }
+}
+
+/**
+ * Checks if a document matches any deleted identifier.
+ */
+function isDocMarkedDeleted(doc, deletedSet) {
+  if (!doc) return true;
+  if (!deletedSet || deletedSet.size === 0) return false;
+
+  const idsToCheck = [
+    doc.id,
+    doc.publicId,
+    doc.fileName,
+    doc.id ? doc.id.replace(/^cld-doc-/, '').replace(/^doc-/, '') : '',
+    doc.publicId ? doc.publicId.replace(/[^a-zA-Z0-9_-]/g, '_') : ''
+  ].filter(Boolean);
+
+  return idsToCheck.some((id) => deletedSet.has(id));
+}
+
+/**
+ * Fetches document assets directly from Cloudinary raw list (.docx, .md, .txt)
+ * AND image list (.pdf).
  * @returns {Promise<Array>}
  */
 export async function fetchCloudinaryRawDocs() {
   if (!CLOUD_NAME) return [];
+  const results = [];
+  const seenIds = new Set();
+
+  // 1. Fetch raw documents (docx, md, txt)
   try {
     const res = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/raw/list/collabs.json?t=${Date.now()}`, {
       cache: 'no-store'
@@ -271,9 +334,9 @@ export async function fetchCloudinaryRawDocs() {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.resources)) {
-        return data.resources
+        data.resources
           .filter((item) => item.public_id && item.public_id.includes('collabs/docs/'))
-          .map((item) => {
+          .forEach((item) => {
             const fileName = (item.public_id || '').split('/').pop() || 'document';
             const ext = fileName.split('.').pop()?.toLowerCase() || 'docx';
             const title =
@@ -283,9 +346,11 @@ export async function fetchCloudinaryRawDocs() {
             const fileUrl = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/v${item.version}/${item.public_id}`;
             const d = item.created_at ? new Date(item.created_at) : new Date();
             const uploadedAt = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            const docId = `cld-doc-${item.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
-            return {
-              id: `cld-doc-${item.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+            seenIds.add(item.public_id);
+            results.push({
+              id: docId,
               publicId: item.public_id,
               title,
               fileName,
@@ -296,14 +361,55 @@ export async function fetchCloudinaryRawDocs() {
               fileSize: 'Cloud Doc',
               content: '',
               isCloudinarySource: true
-            };
+            });
           });
       }
     }
   } catch (err) {
     console.debug('[CloudSync] Failed to fetch raw docs tag list:', err);
   }
-  return [];
+
+  // 2. Fetch image list for PDF documents (Cloudinary stores PDFs under image resource_type)
+  try {
+    const imgRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/docs.json?t=${Date.now()}`, {
+      cache: 'no-store'
+    });
+    if (imgRes.ok) {
+      const imgData = await imgRes.json();
+      if (Array.isArray(imgData.resources)) {
+        imgData.resources.forEach((item) => {
+          if (!item.public_id || seenIds.has(item.public_id)) return;
+          const fileName = (item.public_id || '').split('/').pop() || 'document';
+          const title =
+            item.context?.custom?.title ||
+            item.context?.custom?.caption ||
+            fileName.replace(/[-_]/g, ' ');
+          const d = item.created_at ? new Date(item.created_at) : new Date();
+          const uploadedAt = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+          const docId = `cld-doc-${item.public_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+          seenIds.add(item.public_id);
+          results.push({
+            id: docId,
+            publicId: item.public_id,
+            title,
+            fileName: fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`,
+            format: 'pdf',
+            isPdf: true,
+            fileUrl: `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/v${item.version}/${item.public_id}.pdf`,
+            uploadedAt,
+            fileSize: 'Cloud PDF',
+            pageCount: item.pages || 1,
+            isCloudinarySource: true
+          });
+        });
+      }
+    }
+  } catch (err) {
+    console.debug('[CloudSync] Failed to fetch PDF image docs list:', err);
+  }
+
+  return results;
 }
 
 /**
@@ -315,8 +421,12 @@ export async function fetchRemoteSharedDocsState() {
   const timeoutId = setTimeout(() => controller.abort(), 7000);
 
   try {
-    // 1. Fetch raw list tag items directly from Cloudinary
+    // 1. Fetch raw list & image list tag items directly from Cloudinary
     const rawTagDocs = await fetchCloudinaryRawDocs();
+
+    // 2. Fetch Cloudinary global deleted markers
+    const cloudDeleted = await fetchCloudinaryDeletedIds();
+    const localDeleted = getDeletedDocIds();
 
     const cacheBuster = Date.now();
     const res = await fetch(`${DOCS_REGISTRY_READ_URL}?t=${cacheBuster}`, {
@@ -331,21 +441,25 @@ export async function fetchRemoteSharedDocsState() {
     clearTimeout(timeoutId);
 
     let rawDocs = [];
-    let deletedList = [];
+    let registryDeletedList = [];
 
     if (res.ok) {
       const data = await res.json();
       rawDocs = Array.isArray(data?.docs) ? data.docs : [];
-      deletedList = Array.isArray(data?.deletedIds) ? data.deletedIds : [];
+      registryDeletedList = Array.isArray(data?.deletedIds) ? data.deletedIds : [];
     }
 
-    const deletedSet = new Set(deletedList);
+    const unifiedDeletedSet = new Set([
+      ...cloudDeleted,
+      ...localDeleted,
+      ...registryDeletedList
+    ]);
 
     // Combine registry docs and tag list docs, deduplicating by publicId or id
     const docMap = new Map();
 
     rawDocs.forEach((d) => {
-      if (d && d.id && !deletedSet.has(d.id)) {
+      if (d && !isDocMarkedDeleted(d, unifiedDeletedSet)) {
         docMap.set(d.publicId || d.id, {
           ...d,
           fileUrl: (d.fileUrl || '').replace(/^http:\/\//i, 'https://')
@@ -354,16 +468,17 @@ export async function fetchRemoteSharedDocsState() {
     });
 
     rawTagDocs.forEach((d) => {
-      if (d && d.publicId && !deletedSet.has(d.publicId) && !deletedSet.has(d.id)) {
-        if (!docMap.has(d.publicId)) {
-          docMap.set(d.publicId, d);
+      if (d && !isDocMarkedDeleted(d, unifiedDeletedSet)) {
+        const key = d.publicId || d.id;
+        if (!docMap.has(key)) {
+          docMap.set(key, d);
         }
       }
     });
 
     return {
       docs: Array.from(docMap.values()),
-      deletedIds: deletedList,
+      deletedIds: Array.from(unifiedDeletedSet),
       lastUpdated: new Date().toISOString()
     };
   } catch (err) {
@@ -372,7 +487,11 @@ export async function fetchRemoteSharedDocsState() {
       console.debug('[CloudSync] Docs registry fetch error:', err.message);
     }
     const rawTagDocs = await fetchCloudinaryRawDocs();
-    return { docs: rawTagDocs, deletedIds: [], lastUpdated: '' };
+    const localDeleted = getDeletedDocIds();
+    const cloudDeleted = await fetchCloudinaryDeletedIds();
+    const combinedDeleted = new Set([...localDeleted, ...cloudDeleted]);
+    const cleanDocs = rawTagDocs.filter((d) => !isDocMarkedDeleted(d, combinedDeleted));
+    return { docs: cleanDocs, deletedIds: Array.from(combinedDeleted), lastUpdated: '' };
   }
 }
 
@@ -457,17 +576,31 @@ export async function saveRemoteSharedDoc(newDoc) {
 /**
  * Delete a document from the cloud registry so it disappears permanently for all users.
  * @param {string} id - Document ID
+ * @param {string} publicId - Optional Cloudinary publicId
+ * @param {string} fileUrl - Optional file URL
  * @returns {Promise<boolean>}
  */
-export async function deleteRemoteSharedDoc(id) {
-  if (!id) return false;
+export async function deleteRemoteSharedDoc(id, publicId = '', fileUrl = '') {
+  if (!id && !publicId) return false;
 
+  // 1. Mark in persistent local storage so this browser never resurrects it
+  markDocIdAsDeleted(id, publicId);
+
+  // 2. Post permanent deletion marker to Cloudinary tag collabs_deleted
+  try {
+    await markCloudinaryAssetAsDeleted(id, publicId, fileUrl);
+  } catch (e) {
+    console.debug('[CloudSync] Failed to record deletion marker on Cloudinary:', e);
+  }
+
+  // 3. Update registry if possible
   try {
     const currentState = await fetchRemoteSharedDocsState();
-    const updatedDocs = (currentState.docs || []).filter((d) => d.id !== id);
+    const updatedDocs = (currentState.docs || []).filter((d) => d.id !== id && (!publicId || d.publicId !== publicId));
 
     const deletedSet = new Set(currentState.deletedIds || []);
-    deletedSet.add(id);
+    if (id) deletedSet.add(id);
+    if (publicId) deletedSet.add(publicId);
 
     return await pushDocsRegistryToCloudinary({
       docs: updatedDocs,
@@ -493,32 +626,40 @@ export async function reconcileDocs(localDocs = [], fallbackDocs = []) {
   try {
     const remoteState = await fetchRemoteSharedDocsState();
     const remoteDocs = remoteState.docs || [];
-    const deletedSet = new Set(remoteState.deletedIds || []);
+    const localDeleted = getDeletedDocIds();
+    const cloudDeleted = await fetchCloudinaryDeletedIds();
+    const deletedSet = new Set([...remoteState.deletedIds, ...localDeleted, ...cloudDeleted]);
 
-    // 1. If remote already has synced docs, use remote docs + non-deleted fallback docs
+    // 1. Filter remote docs against all deleted markers
+    const validRemoteDocs = remoteDocs.filter((d) => !isDocMarkedDeleted(d, deletedSet));
+
     const remoteIdMap = new Map();
-    remoteDocs.forEach((d) => {
+    validRemoteDocs.forEach((d) => {
       if (d && d.id) remoteIdMap.set(d.id, d);
     });
 
-    const mergedList = [...remoteDocs];
+    const mergedList = [...validRemoteDocs];
 
-    // Include demo docs unless they were explicitly deleted
+    // Include demo docs ONLY if they were NOT explicitly deleted
     fallbackDocs.forEach((demo) => {
-      if (demo && demo.id && !deletedSet.has(demo.id) && !remoteIdMap.has(demo.id)) {
+      if (demo && demo.id && !isDocMarkedDeleted(demo, deletedSet) && !remoteIdMap.has(demo.id)) {
         mergedList.push(demo);
         remoteIdMap.set(demo.id, demo);
       }
     });
 
-    // Also check if local has any unsynced doc that needs to be pushed up
+    // Also check if local has any unsynced doc that needs to be retained
     let hasUnsavedLocal = false;
     for (const localItem of localDocs || []) {
-      if (localItem && localItem.id && !remoteIdMap.has(localItem.id) && !deletedSet.has(localItem.id)) {
+      if (localItem && localItem.id && !isDocMarkedDeleted(localItem, deletedSet) && !remoteIdMap.has(localItem.id)) {
         if (localItem.fileUrl && !localItem.fileUrl.startsWith('blob:')) {
           mergedList.unshift(localItem);
           remoteIdMap.set(localItem.id, localItem);
           hasUnsavedLocal = true;
+        } else if (localItem.blobUrl || localItem.isPdf) {
+          // Keep local PDF uploads active
+          mergedList.unshift(localItem);
+          remoteIdMap.set(localItem.id, localItem);
         }
       }
     }
@@ -526,17 +667,19 @@ export async function reconcileDocs(localDocs = [], fallbackDocs = []) {
     if (hasUnsavedLocal) {
       pushDocsRegistryToCloudinary({
         docs: mergedList,
-        deletedIds: remoteState.deletedIds || []
+        deletedIds: Array.from(deletedSet)
       }).catch((e) => console.debug('[CloudSync] Background sync back of local doc failed:', e));
     }
 
     return {
       docs: mergedList,
-      deletedIds: remoteState.deletedIds || []
+      deletedIds: Array.from(deletedSet)
     };
   } catch (err) {
     console.warn('[CloudSync] Docs reconciliation error:', err);
-    return { docs: localDocs, deletedIds: [] };
+    const localDeleted = getDeletedDocIds();
+    const cleanLocal = (localDocs || []).filter((d) => !isDocMarkedDeleted(d, localDeleted));
+    return { docs: cleanLocal, deletedIds: Array.from(localDeleted) };
   } finally {
     isDocsSyncing = false;
   }

@@ -111,6 +111,7 @@ export async function uploadDocToCloudinary(file, { title = '' } = {}) {
         publicId: data.public_id,
         resourceType: data.resource_type || (ext === 'pdf' ? 'image' : 'raw'),
         format: data.format || ext,
+        pages: data.pages || 1,
         bytes: data.bytes || file.size,
         createdAt: data.created_at || new Date().toISOString()
       };
@@ -139,6 +140,7 @@ export async function uploadDocToCloudinary(file, { title = '' } = {}) {
       publicId: rawData.public_id,
       resourceType: 'raw',
       format: rawData.format || ext,
+      pages: 1,
       bytes: rawData.bytes || file.size,
       createdAt: rawData.created_at || new Date().toISOString()
     };
@@ -146,6 +148,22 @@ export async function uploadDocToCloudinary(file, { title = '' } = {}) {
     console.error('[Cloudinary] Document upload failed:', err);
     throw err;
   }
+}
+
+/**
+ * Generates high-res image page URL for a Cloudinary PDF document.
+ * This completely bypasses Cloudinary's 401 restricted raw PDF delivery
+ * and works flawlessly across every browser and device.
+ * @param {string} publicId - Cloudinary publicId
+ * @param {number} pageNumber - Page number (1-indexed)
+ * @param {number} width - Optional width rendering target
+ * @returns {string} High-res page image URL
+ */
+export function getCloudinaryPdfPageUrl(publicId, pageNumber = 1, width = 1600) {
+  if (!publicId) return '';
+  const cleanId = publicId.replace(/\.pdf$/i, '').replace(/^\/+/, '');
+  const wParam = width ? `w_${width},c_limit,` : '';
+  return `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/${wParam}f_auto,q_auto/pg_${pageNumber}/${cleanId}.png`;
 }
 
 /**
@@ -176,7 +194,7 @@ export function getOptimizedMediaUrl(url, resourceType = 'image') {
  */
 export function extractPublicIdFromUrl(url) {
   if (!url || typeof url !== 'string') return '';
-  const match = url.match(/\/upload\/(?:v\d+\/)?([^\.]+)/i);
+  const match = url.match(/\/upload\/(?:v\d+\/)?([^.]+)/i);
   return match ? match[1] : '';
 }
 
@@ -221,43 +239,51 @@ export async function fetchCloudinaryDeletedIds() {
 export async function markCloudinaryAssetAsDeleted(id, publicId = '', imageUrl = '') {
   if (!isCloudinaryConfigured()) return false;
 
-  let target = (publicId || '').replace(/^cld-/, '');
-  if (!target && imageUrl) {
-    target = extractPublicIdFromUrl(imageUrl);
+  const targets = new Set();
+  if (id) {
+    targets.add(id.replace(/^cld-/, ''));
   }
-  if (!target && id) {
-    target = id.replace(/^cld-/, '');
+  if (publicId) {
+    targets.add(publicId.replace(/^cld-/, ''));
+  }
+  if (imageUrl) {
+    const extracted = extractPublicIdFromUrl(imageUrl);
+    if (extracted) targets.add(extracted);
   }
 
-  const cleanTarget = target.replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (!cleanTarget) return false;
+  const results = [];
+  for (const t of targets) {
+    const cleanTarget = t.replace(/[^a-zA-Z0-9_-]/g, '_');
+    if (!cleanTarget) continue;
 
-  try {
-    const formData = new FormData();
-    // 1x1 transparent png marker
-    const base64Data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-    const binary = atob(base64Data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    try {
+      const formData = new FormData();
+      // 1x1 transparent png marker
+      const base64Data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const binary = atob(base64Data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'image/png' });
+
+      formData.append('file', blob);
+      formData.append('upload_preset', UPLOAD_PRESET);
+      formData.append('tags', 'collabs_deleted');
+      formData.append('public_id', `collabs/deleted/${cleanTarget}`);
+
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      results.push(res.ok);
+    } catch (err) {
+      console.warn('Failed to post deletion marker to Cloudinary:', err);
     }
-    const blob = new Blob([bytes], { type: 'image/png' });
-
-    formData.append('file', blob);
-    formData.append('upload_preset', UPLOAD_PRESET);
-    formData.append('tags', 'collabs_deleted');
-    formData.append('public_id', `collabs/deleted/${cleanTarget}`);
-
-    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
-      method: 'POST',
-      body: formData
-    });
-
-    return res.ok;
-  } catch (err) {
-    console.warn('Failed to post deletion marker to Cloudinary:', err);
-    return false;
   }
+
+  return results.some(Boolean);
 }
 
 /**

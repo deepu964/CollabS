@@ -50,9 +50,9 @@ export default function UploadDocModal({
     if (!file) return;
 
     const ext = file.name.split('.').pop()?.toLowerCase();
-    const validExts = ['docx', 'md', 'markdown', 'txt'];
+    const validExts = ['docx', 'md', 'markdown', 'txt', 'pdf'];
     if (!validExts.includes(ext)) {
-      setErrorMsg('Supported file formats are Word (.docx), Markdown (.md), and Text (.txt)');
+      setErrorMsg('Supported file formats are Word (.docx), Markdown (.md), Text (.txt), and PDF (.pdf)');
       return;
     }
 
@@ -189,7 +189,7 @@ export default function UploadDocModal({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".docx,.md,.markdown,.txt"
+                accept=".docx,.md,.markdown,.txt,.pdf"
                 className="hidden-file-input"
                 onChange={(e) => e.target.files && handleProcessFile(e.target.files[0])}
               />
