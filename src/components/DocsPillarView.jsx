@@ -14,9 +14,17 @@ import {
   ChevronLeft,
   ChevronRight,
   FileCode,
-  FileType
+  FileType,
+  RefreshCw
 } from 'lucide-react';
 import { parseDocFile, renderMarkdown } from '../services/docParser';
+import { uploadDocToCloudinary } from '../services/cloudinary';
+import {
+  reconcileDocs,
+  saveRemoteSharedDoc,
+  deleteRemoteSharedDoc,
+  fetchRemoteSharedDocs
+} from '../services/cloudSync';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import NotificationToast from './NotificationToast';
 
@@ -86,10 +94,47 @@ export default function DocsPillarView({ onBackToOverview }) {
   const [docPendingDelete, setDocPendingDelete] = useState(null);
   const [toast, setToast] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [copied, setCopied] = useState(false);
   const fileInputRef = useRef(null);
+
+  // Sync documents from global Cloudinary registry
+  const syncCloudDocs = async (showToast = false) => {
+    setIsSyncingCloud(true);
+    try {
+      const result = await reconcileDocs(docs, INITIAL_DOCS);
+      if (Array.isArray(result?.docs) && result.docs.length > 0) {
+        setDocs(result.docs);
+        if (showToast) {
+          setToast({
+            type: 'success',
+            message: 'Synchronized latest documents from Cloud'
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[Docs] Cloud sync error:', err);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Reconcile with Cloudinary docs registry on initial mount
+  useEffect(() => {
+    let isMounted = true;
+    reconcileDocs(docs, INITIAL_DOCS)
+      .then(({ docs: reconciledDocs }) => {
+        if (isMounted && Array.isArray(reconciledDocs) && reconciledDocs.length > 0) {
+          setDocs(reconciledDocs);
+        }
+      })
+      .catch((err) => console.debug('[Docs] Mount sync notice:', err));
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Pagination: 9 cards per page (Page 1 has 1 Upload card + 8 docs = 9 cards, Page 2+ has 9 docs)
   const [currentPage, setCurrentPage] = useState(1);
@@ -160,18 +205,37 @@ export default function DocsPillarView({ onBackToOverview }) {
       const d = new Date();
       const dateFormatted = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
+      // 1. Upload original document file to Cloudinary so it is permanently accessible across all browsers
+      let cloudUrl = '';
+      let cloudPublicId = '';
+      try {
+        const uploadRes = await uploadDocToCloudinary(file, { title: parsed.title });
+        if (uploadRes?.url) {
+          cloudUrl = uploadRes.url;
+          cloudPublicId = uploadRes.publicId;
+        }
+      } catch (uploadErr) {
+        console.warn('[Docs] Cloudinary doc upload fallback:', uploadErr.message);
+      }
+
       const newDocItem = {
         id: `doc-${Date.now()}`,
         title: parsed.title,
         fileName: file.name,
         format: parsed.format,
         isPdf: Boolean(parsed.isPdf),
-        fileUrl: parsed.fileUrl || '',
+        fileUrl: cloudUrl || parsed.fileUrl || '',
+        publicId: cloudPublicId,
         uploadedAt: dateFormatted,
         fileSize: sizeStr,
         content: parsed.rawContent,
         html: parsed.html
       };
+
+      // 2. Persist to global Cloudinary registry for multi-user cross-browser synchronization
+      saveRemoteSharedDoc(newDocItem).catch((e) =>
+        console.warn('[Docs] Failed to sync new doc to cloud registry:', e)
+      );
 
       setDocs((prev) => [newDocItem, ...prev]);
       setToast({
@@ -220,6 +284,9 @@ export default function DocsPillarView({ onBackToOverview }) {
     if (!docPendingDelete) return;
     const target = docPendingDelete;
     setDocs((prev) => prev.filter((d) => d.id !== target.id));
+    deleteRemoteSharedDoc(target.id).catch((e) =>
+      console.warn('[Docs] Failed to delete doc from cloud registry:', e)
+    );
     if (selectedDoc?.id === target.id) setSelectedDoc(null);
     setDocPendingDelete(null);
     setToast({
@@ -241,10 +308,13 @@ export default function DocsPillarView({ onBackToOverview }) {
 
   const handleDownload = () => {
     if (!selectedDoc) return;
-    if (selectedDoc.isPdf && selectedDoc.fileUrl) {
+
+    if (selectedDoc.fileUrl) {
       const link = document.createElement('a');
       link.href = selectedDoc.fileUrl;
-      link.download = selectedDoc.fileName || 'document.pdf';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = selectedDoc.fileName || `document.${selectedDoc.format || 'pdf'}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -303,6 +373,17 @@ export default function DocsPillarView({ onBackToOverview }) {
         </div>
 
         <div className="heading-right">
+          <button
+            type="button"
+            onClick={() => syncCloudDocs(true)}
+            className="action-icon-btn"
+            title="Check for new uploaded documents from cloud"
+            aria-label="Sync docs"
+            disabled={isSyncingCloud}
+            style={{ marginRight: '8px' }}
+          >
+            <RefreshCw size={13} className={isSyncingCloud ? 'spin-animation' : ''} />
+          </button>
           <span className="reference-counter">
             {docs.length} {docs.length === 1 ? 'item' : 'items'}
           </span>

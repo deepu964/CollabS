@@ -8,6 +8,7 @@ import {
   UploadCloud,
   Plus
 } from 'lucide-react';
+import { fetchRemoteSharedDocsState } from '../services/cloudSync';
 
 const ICON_MAP = {
   b2b: Building2,
@@ -23,21 +24,68 @@ export default function CategoryCardsOverview({
   onOpenUploadModal,
   darkMode = false
 }) {
-  const [docsCount, setDocsCount] = useState(0);
-
-  // Load count of uploaded docs from localStorage
-  useEffect(() => {
+  const [docsCount, setDocsCount] = useState(() => {
     try {
       const saved = localStorage.getItem('collabs_docs_library_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setDocsCount(parsed.length);
-        }
+        if (Array.isArray(parsed)) return parsed.length;
       }
     } catch (e) {
-      console.debug('Failed to read docs count', e);
+      console.debug('Failed to read initial docs count', e);
     }
+    return 2;
+  });
+
+  // Load count of uploaded docs from localStorage and sync from cloud
+  useEffect(() => {
+    let isMounted = true;
+
+    const updateFromStorage = () => {
+      try {
+        const saved = localStorage.getItem('collabs_docs_library_v2');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && isMounted) {
+            setDocsCount(parsed.length);
+          }
+        }
+      } catch (e) {
+        console.debug('Failed to read docs count', e);
+      }
+    };
+
+    updateFromStorage();
+
+    // Fetch remote docs registry in background for real-time count across all devices
+    fetchRemoteSharedDocsState()
+      .then(({ docs: remoteDocs, deletedIds }) => {
+        if (!isMounted) return;
+        const deletedSet = new Set(deletedIds || []);
+        const demoDocs = ['doc-master-prd', 'doc-b2b-specs'];
+        const activeDemoDocs = demoDocs.filter((id) => !deletedSet.has(id));
+
+        const remoteIdMap = new Map();
+        (remoteDocs || []).forEach((d) => {
+          if (d && d.id) remoteIdMap.set(d.id, d);
+        });
+
+        let total = (remoteDocs || []).length;
+        activeDemoDocs.forEach((id) => {
+          if (!remoteIdMap.has(id)) total += 1;
+        });
+
+        if (total > 0) {
+          setDocsCount(total);
+        }
+      })
+      .catch((err) => console.debug('Failed to fetch remote docs count:', err));
+
+    window.addEventListener('storage', updateFromStorage);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('storage', updateFromStorage);
+    };
   }, []);
 
   return (

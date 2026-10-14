@@ -69,6 +69,86 @@ export async function uploadMediaToCloudinary(file, { category = 'b2b', title = 
 export const uploadImageToCloudinary = uploadMediaToCloudinary;
 
 /**
+ * Uploads a document file (.docx, .md, .txt, .pdf) to Cloudinary using unsigned upload preset.
+ * Attempts auto upload first and falls back to raw upload if needed.
+ * @param {File} file - Document file
+ * @param {Object} options - Optional { title }
+ * @returns {Promise<{ url: string, publicId: string, resourceType: string, format: string, bytes: number, createdAt: string }>}
+ */
+export async function uploadDocToCloudinary(file, { title = '' } = {}) {
+  if (!isCloudinaryConfigured()) {
+    throw new Error(
+      'Cloudinary is not configured. Please check VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET in your .env file.'
+    );
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', UPLOAD_PRESET);
+  formData.append('folder', 'collabs/docs');
+  formData.append('tags', 'collabs,docs');
+
+  if (title) {
+    const cleanTitle = title.replace(/[|;=]/g, ' ').trim();
+    formData.append('context', `caption=${cleanTitle}|title=${cleanTitle}`);
+  }
+
+  const ext = (file.name || '').split('.').pop()?.toLowerCase() || '';
+
+  // 1. Try auto/upload first
+  try {
+    const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`;
+    const response = await fetch(uploadUrl, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await response.json();
+
+    if (response.ok) {
+      const secureUrl = (data.secure_url || data.url || '').replace(/^http:\/\//i, 'https://');
+      return {
+        url: secureUrl,
+        publicId: data.public_id,
+        resourceType: data.resource_type || (ext === 'pdf' ? 'image' : 'raw'),
+        format: data.format || ext,
+        bytes: data.bytes || file.size,
+        createdAt: data.created_at || new Date().toISOString()
+      };
+    }
+  } catch (err) {
+    console.debug('[Cloudinary] auto/upload document attempt threw:', err);
+  }
+
+  // 2. Fallback to raw/upload if auto/upload was not successful
+  try {
+    const rawUploadUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
+    const rawRes = await fetch(rawUploadUrl, {
+      method: 'POST',
+      body: formData,
+    });
+    const rawData = await rawRes.json();
+
+    if (!rawRes.ok) {
+      const errorMsg = rawData.error?.message || 'Failed to upload document to Cloudinary';
+      throw new Error(errorMsg);
+    }
+
+    const secureUrl = (rawData.secure_url || rawData.url || '').replace(/^http:\/\//i, 'https://');
+    return {
+      url: secureUrl,
+      publicId: rawData.public_id,
+      resourceType: 'raw',
+      format: rawData.format || ext,
+      bytes: rawData.bytes || file.size,
+      createdAt: rawData.created_at || new Date().toISOString()
+    };
+  } catch (err) {
+    console.error('[Cloudinary] Document upload failed:', err);
+    throw err;
+  }
+}
+
+/**
  * Ensures optimal Cloudinary image delivery across all browsers with HTTPS and f_auto,q_auto.
  * @param {string} url - Media URL
  * @param {string} resourceType - 'image' or 'video'
