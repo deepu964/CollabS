@@ -9,6 +9,9 @@ import UploadModal from './components/UploadModal';
 import DocsPillarView from './components/DocsPillarView';
 import DeleteConfirmModal from './components/DeleteConfirmModal';
 import NotificationToast from './components/NotificationToast';
+import ChatWidget from './components/ChatWidget';
+import TeamAuthGate from './components/TeamAuthGate';
+import { authService } from './services/authService';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
 import {
   Sun,
@@ -56,6 +59,11 @@ export default function App() {
     if (saved !== null) return JSON.parse(saved);
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
+
+  // Authenticated Team Member (Restricts access to the 5 authorized roles)
+  const [authenticatedMember, setAuthenticatedMember] = useState(() =>
+    authService.getAuthenticatedMember()
+  );
 
   // Active Category: null = 3 Cards Main Page; 'b2b' | 'admin' | 'driver' = Category Gallery
   const [activeCategory, setActiveCategory] = useState(null);
@@ -505,6 +513,28 @@ export default function App() {
               <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
             </button>
 
+            {/* Authenticated Team Member Pill & Role Switcher */}
+            {authenticatedMember && (
+              <button
+                type="button"
+                className="header-auth-member-pill"
+                onClick={() => {
+                  if (window.confirm(`Lock session and switch role from ${authenticatedMember.name}?`)) {
+                    authService.logout();
+                    setAuthenticatedMember(null);
+                  }
+                }}
+                title="Click to lock session or switch team role"
+              >
+                <span
+                  className="auth-member-dot"
+                  style={{ backgroundColor: authenticatedMember.badgeColor || '#3b82f6' }}
+                />
+                <span className="auth-member-name">{authenticatedMember.name}</span>
+                <span className="auth-member-role-label">({authenticatedMember.shortName})</span>
+              </button>
+            )}
+
             {/* Dark / Light Mode Toggle */}
             <button
               type="button"
@@ -724,6 +754,24 @@ export default function App() {
         onError={(errMsg) => setToast({ type: 'error', message: errMsg })}
         defaultCategory={uploadModalCategory}
       />
+
+      {/* Floating Team Chat & Q&A Widget */}
+      {authenticatedMember && (
+        <ChatWidget
+          references={references}
+          activeCategory={activeCategory}
+          activeReference={selectedReference}
+          onOpenReference={(ref) => setSelectedReference(ref)}
+          onOpenDoc={() => setActiveCategory('docs')}
+        />
+      )}
+
+      {/* Team Access PIN Security Gate (Locks app for the 5 authorized roles) */}
+      {!authenticatedMember && (
+        <TeamAuthGate
+          onAuthenticated={(member) => setAuthenticatedMember(member)}
+        />
+      )}
     </div>
   );
 }
