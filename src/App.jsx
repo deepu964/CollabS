@@ -11,6 +11,7 @@ import DeleteConfirmModal from './components/DeleteConfirmModal';
 import NotificationToast from './components/NotificationToast';
 import ChatWidget from './components/ChatWidget';
 import TeamAuthGate from './components/TeamAuthGate';
+import SwitchRoleModal from './components/SwitchRoleModal';
 import { authService } from './services/authService';
 import { CATEGORIES, INITIAL_REFERENCES } from './data/initialData';
 import {
@@ -64,6 +65,7 @@ export default function App() {
   const [authenticatedMember, setAuthenticatedMember] = useState(() =>
     authService.getAuthenticatedMember()
   );
+  const [isSwitchRoleModalOpen, setIsSwitchRoleModalOpen] = useState(false);
 
   // Active Category: null = 3 Cards Main Page; 'b2b' | 'admin' | 'driver' = Category Gallery
   const [activeCategory, setActiveCategory] = useState(null);
@@ -518,12 +520,7 @@ export default function App() {
               <button
                 type="button"
                 className="header-auth-member-pill"
-                onClick={() => {
-                  if (window.confirm(`Lock session and switch role from ${authenticatedMember.name}?`)) {
-                    authService.logout();
-                    setAuthenticatedMember(null);
-                  }
-                }}
+                onClick={() => setIsSwitchRoleModalOpen(true)}
                 title="Click to lock session or switch team role"
               >
                 <span
@@ -772,6 +769,18 @@ export default function App() {
           onAuthenticated={(member) => setAuthenticatedMember(member)}
         />
       )}
+
+      {/* Custom Switch Role Confirmation Modal (Replaces browser window.confirm alert) */}
+      <SwitchRoleModal
+        isOpen={isSwitchRoleModalOpen}
+        member={authenticatedMember}
+        onConfirmSwitch={() => {
+          authService.logout();
+          setAuthenticatedMember(null);
+          setIsSwitchRoleModalOpen(false);
+        }}
+        onClose={() => setIsSwitchRoleModalOpen(false)}
+      />
     </div>
   );
 }

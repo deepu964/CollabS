@@ -20,6 +20,18 @@ import {
 } from 'lucide-react';
 import { chatService, DEFAULT_CHANNELS, TEAM_ROLES } from '../services/chatService';
 
+let sharedAudioCtx = null;
+function getAudioContext() {
+  if (!sharedAudioCtx && typeof window !== 'undefined') {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) sharedAudioCtx = new AudioCtx();
+  }
+  if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+    sharedAudioCtx.resume().catch(() => {});
+  }
+  return sharedAudioCtx;
+}
+
 export default function ChatWidget({
   references = [],
   activeCategory = null,
@@ -48,12 +60,27 @@ export default function ChatWidget({
   const originalTitleRef = useRef(typeof document !== 'undefined' ? document.title : 'CollabS');
   const titleIntervalRef = useRef(null);
 
-  // Audio Chime Generator
+  // Unlock browser audio context on first user click or keypress
+  useEffect(() => {
+    const unlockAudio = () => {
+      getAudioContext();
+    };
+    window.addEventListener('click', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  // Audio Chime Generator (Dual tone Apple notification chime)
   const playNotificationChime = () => {
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
       const now = ctx.currentTime;
 
       // Note 1 (E5 - 659Hz)
@@ -61,26 +88,26 @@ export default function ChatWidget({
       const gain1 = ctx.createGain();
       osc1.type = 'sine';
       osc1.frequency.setValueAtTime(659.25, now);
-      gain1.gain.setValueAtTime(0.12, now);
-      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+      gain1.gain.setValueAtTime(0.18, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
       osc1.start(now);
-      osc1.stop(now + 0.18);
+      osc1.stop(now + 0.22);
 
       // Note 2 (B5 - 987Hz)
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.type = 'sine';
       osc2.frequency.setValueAtTime(987.77, now + 0.1);
-      gain2.gain.setValueAtTime(0.15, now + 0.1);
-      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      gain2.gain.setValueAtTime(0.2, now + 0.1);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
       osc2.start(now + 0.1);
-      osc2.stop(now + 0.35);
-    } catch {
-      // Audio suppressed if browser policy blocks autoplay
+      osc2.stop(now + 0.42);
+    } catch (e) {
+      console.debug('[Audio] chime error', e);
     }
   };
 
@@ -135,24 +162,48 @@ export default function ChatWidget({
 
         if (!isFromMe) {
           const myRole = (currentUser.role || '').toLowerCase();
-          const isMentioned = incomingMsg.mentions?.some(
-            (m) =>
-              m.id === myRole ||
-              m.id === 'all' ||
-              (m.name && m.name.toLowerCase() === myRole) ||
-              (m.name && m.name.toLowerCase() === 'all')
-          );
+          const myName = (currentUser.name || '').toLowerCase();
+          const rawText = (incomingMsg.text || '').toLowerCase();
+
+          // 1. Structured mentions check (Case-insensitive)
+          const isMentionedInArray = incomingMsg.mentions?.some((m) => {
+            const mId = (m.id || '').toLowerCase();
+            const mName = (m.name || '').toLowerCase();
+            return (
+              mId === myRole ||
+              mId === 'all' ||
+              mName === myRole ||
+              mName === 'all' ||
+              (myName && mName === myName) ||
+              (myRole === 'admin' && (mId === 'admin' || mName.includes('admin'))) ||
+              (myRole === 'backend' && (mId === 'backend' || mName.includes('backend'))) ||
+              (myRole === 'b2b' && (mId === 'b2b' || mName.includes('b2b'))) ||
+              (myRole === 'driver' && (mId === 'driver' || mName.includes('driver'))) ||
+              (myRole === 'qa' && (mId === 'qa' || mName.includes('qa')))
+            );
+          });
+
+          // 2. Direct text mention check (Matches @admin, @Admin, @ADMIN, @all, @All, camelCase)
+          const isMentionedInText =
+            /(?:^|\s)@all\b/i.test(rawText) ||
+            new RegExp(`(?:^|\\s)@${myRole}\\b`, 'i').test(rawText) ||
+            (myName && new RegExp(`(?:^|\\s)@${myName}\\b`, 'i').test(rawText)) ||
+            (myRole === 'admin' && /(?:^|\s)@admin\b/i.test(rawText)) ||
+            (myRole === 'backend' && /(?:^|\s)@backend\b/i.test(rawText)) ||
+            (myRole === 'b2b' && /(?:^|\s)@b2b\b/i.test(rawText)) ||
+            (myRole === 'driver' && /(?:^|\s)@driver\b/i.test(rawText)) ||
+            (myRole === 'qa' && /(?:^|\s)@qa\b/i.test(rawText));
 
           const isDirectRoomMatch =
             (myRole === 'admin' && incomingMsg.roomId === 'admin-line') ||
             (myRole === 'backend' && incomingMsg.roomId === 'backend-help');
 
-          if (isMentioned || isDirectRoomMatch) {
+          if (isMentionedInArray || isMentionedInText || isDirectRoomMatch) {
             playNotificationChime();
             setActiveMentionToast(incomingMsg);
             setUnreadCount((prev) => prev + 1);
 
-            const isAll = incomingMsg.mentions?.some(m => m.id === 'all' || m.name === 'all');
+            const isAll = /(?:^|\s)@all\b/i.test(rawText) || incomingMsg.mentions?.some(m => (m.id || '').toLowerCase() === 'all' || (m.name || '').toLowerCase() === 'all');
             const alertTag = isAll ? '@all' : `@${currentUser.name || myRole}`;
             startTitleBlink(`🔴 (1) New Doubt for ${alertTag} | CollabS`);
           }
@@ -314,12 +365,37 @@ export default function ChatWidget({
   // Send message
   const handleSendMessage = (e) => {
     e?.preventDefault();
-    if (!inputText.trim() && stagedMentions.length === 0) return;
+    const rawText = inputText.trim();
+    if (!rawText && stagedMentions.length === 0) return;
+
+    // Automatically detect @mentions from text regardless of casing (camelCase, lower, upper)
+    const finalMentions = [...stagedMentions];
+    const mentionRegex = /(?:^|\s)@([a-zA-Z0-9_-]+)/g;
+    let match;
+
+    while ((match = mentionRegex.exec(rawText)) !== null) {
+      const tag = match[1].toLowerCase();
+      const matchedRole = TEAM_ROLES.find(
+        (r) =>
+          r.id.toLowerCase() === tag ||
+          r.name.toLowerCase() === tag ||
+          (r.displayName && r.displayName.toLowerCase().includes(tag))
+      );
+
+      if (matchedRole && !finalMentions.some((m) => m.id === matchedRole.id)) {
+        finalMentions.push({
+          type: 'role',
+          id: matchedRole.id,
+          name: matchedRole.name,
+          isBroadcast: Boolean(matchedRole.isBroadcast || matchedRole.id === 'all')
+        });
+      }
+    }
 
     chatService.sendMessage({
       roomId: activeRoomId,
-      text: inputText,
-      mentions: stagedMentions
+      text: rawText,
+      mentions: finalMentions
     });
 
     setInputText('');
@@ -441,6 +517,25 @@ export default function ChatWidget({
             </div>
 
             <div className="header-actions-group">
+              {/* Test Sound & Alert Button */}
+              <button
+                type="button"
+                className="chat-test-sound-btn"
+                onClick={() => {
+                  playNotificationChime();
+                  setActiveMentionToast({
+                    sender: { name: 'System Test', role: 'admin' },
+                    text: 'Sound & Alert Notification is working properly!',
+                    mentions: [{ id: 'all' }],
+                    roomId: activeRoomId
+                  });
+                }}
+                title="Test notification chime & banner"
+                aria-label="Test notification sound"
+              >
+                <Bell size={13} />
+              </button>
+
               {/* User Profile Pill */}
               <button
                 type="button"
@@ -544,16 +639,27 @@ export default function ChatWidget({
                 const isMe = msg.sender?.id === currentUser.id || msg.sender?.name === currentUser.name;
                 const roleStyle = getRoleBadgeStyle(msg.sender?.role);
 
+                // Disambiguate personal name vs role name (avoids B2B Client repeated twice)
+                const roleObj = TEAM_ROLES.find((r) => r.id === msg.sender?.role);
+                const roleTagText = roleObj?.displayName || roleObj?.name || msg.sender?.role || 'Member';
+                const rawSenderName = (msg.sender?.name || '').trim();
+                const isDuplicated =
+                  !rawSenderName ||
+                  rawSenderName.toLowerCase() === (msg.sender?.role || '').toLowerCase() ||
+                  rawSenderName.toLowerCase() === roleTagText.toLowerCase();
+
+                const cleanSenderName = isDuplicated ? 'Team Member' : rawSenderName;
+
                 return (
                   <div key={msg.id} className={`chat-message-row ${isMe ? 'own-message' : ''}`}>
                     <div className="message-avatar-indicator">
-                      {(msg.sender?.name || 'U').charAt(0).toUpperCase()}
+                      {cleanSenderName.charAt(0).toUpperCase()}
                     </div>
                     <div className="message-content-bundle">
                       <div className="message-meta-header">
-                        <span className="sender-name">{msg.sender?.name || 'Team Member'}</span>
+                        <span className="sender-name">{cleanSenderName}</span>
                         <span className="sender-role-tag" style={roleStyle}>
-                          {TEAM_ROLES.find((r) => r.id === msg.sender?.role)?.name || msg.sender?.role || 'Member'}
+                          {roleTagText}
                         </span>
                         <span className="message-time">
                           {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

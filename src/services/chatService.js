@@ -1,13 +1,20 @@
 /**
  * Chat Service for CollabS
- * Manages rooms (#general, #backend-help, #docs-feedback, DMs),
+ * Manages rooms (#general, #backend-help, #docs-feedback, #admin-line),
  * user profile, message persistence, real-time multi-tab broadcasting,
- * and optional Firebase / Cloud real-time sync.
+ * and global cross-device cloud synchronization via Cloudinary CDN Registry.
  */
 
 const STORAGE_KEY_MESSAGES = 'collabs_chat_messages_v1';
 const STORAGE_KEY_USER = 'collabs_chat_user_v1';
 const BROADCAST_CHANNEL_NAME = 'collabs_chat_bus_v1';
+
+// Global Cloud Registry Settings (Syncs across different computers and mobile phones)
+const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
+const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
+const CHAT_REGISTRY_PUBLIC_ID = 'collabs_global_chat_registry_v1';
+const CHAT_READ_URL = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/${CHAT_REGISTRY_PUBLIC_ID}`;
+const CHAT_WRITE_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
 
 // Default team channels
 export const DEFAULT_CHANNELS = [
@@ -51,7 +58,10 @@ class ChatService {
   constructor() {
     this.listeners = new Set();
     this.broadcastChannel = null;
+    this.isSyncing = false;
+    this.pollInterval = null;
 
+    // 1. Same-device multi-tab synchronization via BroadcastChannel
     if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
       try {
         this.broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
@@ -63,6 +73,18 @@ class ChatService {
       } catch (err) {
         console.warn('[ChatService] BroadcastChannel unavailable', err);
       }
+    }
+
+    // 2. Global cross-device synchronization (polls Cloudinary CDN every 3.5s)
+    if (typeof window !== 'undefined') {
+      this.fetchRemoteMessages(); // Initial fetch
+      this.pollInterval = setInterval(() => {
+        this.fetchRemoteMessages();
+      }, 3500);
+
+      window.addEventListener('focus', () => {
+        this.fetchRemoteMessages();
+      });
     }
   }
 
@@ -82,6 +104,90 @@ class ChatService {
         console.error('[ChatService] listener error', e);
       }
     });
+  }
+
+  // Fetch messages from global Cloudinary CDN
+  async fetchRemoteMessages() {
+    if (this.isSyncing) return;
+    this.isSyncing = true;
+
+    try {
+      const cacheBuster = Date.now();
+      const res = await fetch(`${CHAT_READ_URL}?t=${cacheBuster}`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate'
+        }
+      });
+
+      if (!res.ok) {
+        this.isSyncing = false;
+        return;
+      }
+
+      const data = await res.json();
+      const remoteMessages = Array.isArray(data?.messages) ? data.messages : [];
+
+      if (remoteMessages.length === 0) {
+        this.isSyncing = false;
+        return;
+      }
+
+      const localMessages = this.getAllMessages();
+      const localIds = new Set(localMessages.map((m) => m.id));
+
+      // Find incoming messages from other computers
+      const incomingNew = remoteMessages.filter((rm) => rm && rm.id && !localIds.has(rm.id));
+
+      if (incomingNew.length > 0) {
+        // Merge & preserve chronological order
+        const merged = [...localMessages, ...incomingNew].sort(
+          (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+        );
+
+        // Keep last 400 messages
+        const trimmed = merged.slice(-400);
+
+        try {
+          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(trimmed));
+        } catch (e) {
+          console.warn('Failed to cache remote messages', e);
+        }
+
+        // Notify with the latest incoming message for notifications
+        const latestNew = incomingNew[incomingNew.length - 1];
+        this.notifyListeners(latestNew);
+      }
+    } catch (err) {
+      // Offline or network error
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
+  // Push updated messages array to Cloudinary CDN
+  async pushMessagesToCloud(messages) {
+    try {
+      const payload = JSON.stringify({
+        version: 1,
+        lastUpdated: new Date().toISOString(),
+        messages: (messages || []).slice(-400)
+      });
+
+      const formData = new FormData();
+      const blob = new Blob([payload], { type: 'application/json' });
+      formData.append('file', blob);
+      formData.append('upload_preset', UPLOAD_PRESET);
+      formData.append('public_id', CHAT_REGISTRY_PUBLIC_ID);
+
+      await fetch(CHAT_WRITE_URL, {
+        method: 'POST',
+        body: formData
+      });
+    } catch (err) {
+      console.warn('[ChatService] Failed to push to cloud registry', err);
+    }
   }
 
   // User Profile
@@ -156,7 +262,7 @@ class ChatService {
       sender: {
         id: user.id,
         name: user.name || 'Anonymous',
-        role: user.role || 'frontend'
+        role: user.role || 'b2b'
       },
       text: (text || '').trim(),
       mentions: Array.isArray(mentions) ? mentions : [],
@@ -172,7 +278,7 @@ class ChatService {
       console.error('Failed to save message', e);
     }
 
-    // Broadcast across other open browser tabs
+    // 1. Broadcast across open tabs on this machine
     if (this.broadcastChannel) {
       this.broadcastChannel.postMessage({
         type: 'NEW_MESSAGE',
@@ -180,13 +286,17 @@ class ChatService {
       });
     }
 
+    // 2. Notify local listeners instantly
     this.notifyListeners(newMessage);
+
+    // 3. Sync to Global Cloud Registry (Sends to teammates across different laptops/phones)
+    this.pushMessagesToCloud(updated);
+
     return newMessage;
   }
 
   // Get unread counts
   getUnreadCount(currentRoomId = null) {
-    // Basic unread helper
     return 0;
   }
 }

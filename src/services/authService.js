@@ -90,7 +90,7 @@ class AuthService {
       role: roleConfig.id,
       roleName: roleConfig.name,
       shortName: roleConfig.shortName,
-      name: displayName.trim() || roleConfig.shortName,
+      name: displayName.trim() || 'Team Member',
       badgeColor: roleConfig.badgeColor,
       isAuthenticated: true,
       authenticatedAt: new Date().toISOString()
