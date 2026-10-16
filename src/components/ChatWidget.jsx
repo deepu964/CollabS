@@ -47,7 +47,7 @@ export default function ChatWidget({
   const [currentUser, setCurrentUser] = useState(() => chatService.getCurrentUser());
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showMentionMenu, setShowMentionMenu] = useState(false);
-  const [mentionTab, setMentionTab] = useState('docs'); // 'docs' | 'images' | 'roles'
+  const [mentionTab, setMentionTab] = useState('roles'); // 'roles' | 'docs' | 'images'
   const [mentionSearch, setMentionSearch] = useState('');
   const [showRoomDropdown, setShowRoomDropdown] = useState(false);
 
@@ -286,8 +286,41 @@ export default function ChatWidget({
 
     const lastWord = val.split(/\s+/).pop() || '';
     if (lastWord.startsWith('@')) {
+      const query = lastWord.slice(1);
       setShowMentionMenu(true);
-      setMentionSearch(lastWord.slice(1));
+      setMentionSearch(query);
+
+      const qLower = query.toLowerCase();
+      // Auto-detect best tab based on query:
+      if (
+        !qLower ||
+        TEAM_ROLES.some(
+          (r) =>
+            r.name.toLowerCase().includes(qLower) ||
+            r.id.toLowerCase().includes(qLower) ||
+            (r.displayName && r.displayName.toLowerCase().includes(qLower))
+        )
+      ) {
+        setMentionTab('roles');
+      } else if (
+        docsList.some(
+          (d) =>
+            d.title.toLowerCase().includes(qLower) ||
+            (d.fileName && d.fileName.toLowerCase().includes(qLower))
+        )
+      ) {
+        setMentionTab('docs');
+      } else if (
+        references.some(
+          (r) =>
+            (r.title || '').toLowerCase().includes(qLower) ||
+            (r.category || '').toLowerCase().includes(qLower)
+        )
+      ) {
+        setMentionTab('images');
+      } else {
+        setMentionTab('roles');
+      }
     } else if (showMentionMenu && !lastWord.startsWith('@')) {
       setShowMentionMenu(false);
       setMentionSearch('');
@@ -730,6 +763,14 @@ export default function ChatWidget({
               <div className="mention-tabs-bar">
                 <button
                   type="button"
+                  className={`mention-tab-btn ${mentionTab === 'roles' ? 'active' : ''}`}
+                  onClick={() => setMentionTab('roles')}
+                >
+                  <Users size={12} />
+                  <span>Team Roles ({filteredRoles.length})</span>
+                </button>
+                <button
+                  type="button"
                   className={`mention-tab-btn ${mentionTab === 'docs' ? 'active' : ''}`}
                   onClick={() => setMentionTab('docs')}
                 >
@@ -743,14 +784,6 @@ export default function ChatWidget({
                 >
                   <ImageIcon size={12} />
                   <span>Images / Screens ({filteredReferences.length})</span>
-                </button>
-                <button
-                  type="button"
-                  className={`mention-tab-btn ${mentionTab === 'roles' ? 'active' : ''}`}
-                  onClick={() => setMentionTab('roles')}
-                >
-                  <Users size={12} />
-                  <span>Team Roles</span>
                 </button>
               </div>
 
@@ -892,6 +925,34 @@ export default function ChatWidget({
               value={inputText}
               onChange={handleInputChange}
               onKeyDown={(e) => {
+                if (showMentionMenu) {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setShowMentionMenu(false);
+                    return;
+                  }
+                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                    let targetItem = null;
+                    let targetType = null;
+                    if (mentionTab === 'roles' && filteredRoles.length > 0) {
+                      targetItem = filteredRoles[0];
+                      targetType = 'role';
+                    } else if (mentionTab === 'docs' && filteredDocs.length > 0) {
+                      targetItem = filteredDocs[0];
+                      targetType = 'doc';
+                    } else if (mentionTab === 'images' && filteredReferences.length > 0) {
+                      targetItem = filteredReferences[0];
+                      targetType = 'image';
+                    }
+
+                    if (targetItem && targetType) {
+                      e.preventDefault();
+                      handleSelectMention(targetItem, targetType);
+                      return;
+                    }
+                  }
+                }
+
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   handleSendMessage();

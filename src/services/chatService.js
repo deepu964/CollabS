@@ -2,19 +2,29 @@
  * Chat Service for CollabS
  * Manages rooms (#general, #backend-help, #docs-feedback, #admin-line),
  * user profile, message persistence, real-time multi-tab broadcasting,
- * and global cross-device cloud synchronization via Cloudinary CDN Registry.
+ * instant multi-device WebSockets (HiveMQ MQTT over WSS),
+ * and global cross-device cloud archive via Cloudinary CDN Tag List.
  */
+
+import Paho from 'paho-mqtt';
 
 const STORAGE_KEY_MESSAGES = 'collabs_chat_messages_v1';
 const STORAGE_KEY_USER = 'collabs_chat_user_v1';
 const BROADCAST_CHANNEL_NAME = 'collabs_chat_bus_v1';
 
-// Global Cloud Registry Settings (Syncs across different computers and mobile phones)
+// Global Cloud Sync Settings (Cloudinary Unsigned Tag Listing)
 const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
 const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
-const CHAT_REGISTRY_PUBLIC_ID = 'collabs_global_chat_registry_v1';
-const CHAT_READ_URL = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/${CHAT_REGISTRY_PUBLIC_ID}`;
-const CHAT_WRITE_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
+const CHAT_TAG = 'collabs_chat';
+const CHAT_FOLDER = 'collabs/chat';
+const CHAT_LIST_URL = `https://res.cloudinary.com/${CLOUD_NAME}/raw/list/${CHAT_TAG}.json`;
+const CHAT_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
+
+// Live Multi-Device Real-Time WebSocket Broker (Public WSS - Zero Config, Sub-100ms delivery)
+const MQTT_BROKER = 'broker.hivemq.com';
+const MQTT_PORT = 8884;
+const MQTT_PATH = '/mqtt';
+const MQTT_TOPIC = 'collabs/v1/team_messages';
 
 // Default team channels
 export const DEFAULT_CHANNELS = [
@@ -60,6 +70,9 @@ class ChatService {
     this.broadcastChannel = null;
     this.isSyncing = false;
     this.pollInterval = null;
+    this.mqttClient = null;
+    this.isMqttConnected = false;
+    this.mqttReconnectTimer = null;
 
     // 1. Same-device multi-tab synchronization via BroadcastChannel
     if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
@@ -67,7 +80,7 @@ class ChatService {
         this.broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
         this.broadcastChannel.onmessage = (event) => {
           if (event.data?.type === 'NEW_MESSAGE') {
-            this.notifyListeners(event.data.message);
+            this.handleLocalBroadcast(event.data.message);
           }
         };
       } catch (err) {
@@ -75,16 +88,158 @@ class ChatService {
       }
     }
 
-    // 2. Global cross-device synchronization (polls Cloudinary CDN every 3.5s)
+    // 2. Instant multi-device synchronization via HiveMQ WebSockets (<100ms latency)
     if (typeof window !== 'undefined') {
-      this.fetchRemoteMessages(); // Initial fetch
+      this.initMqtt();
+    }
+
+    // 3. Cloudinary background sync (backfills history from cloud)
+    if (typeof window !== 'undefined') {
+      this.fetchRemoteMessages();
       this.pollInterval = setInterval(() => {
         this.fetchRemoteMessages();
-      }, 3500);
+      }, 5000);
 
       window.addEventListener('focus', () => {
         this.fetchRemoteMessages();
+        if (!this.isMqttConnected) {
+          this.connectMqtt();
+        }
       });
+    }
+  }
+
+  // Initialize MQTT over secure WebSockets
+  initMqtt() {
+    try {
+      const PahoModule = Paho.default || Paho;
+      const PahoClient = PahoModule.Client || window?.Paho?.MQTT?.Client;
+      if (!PahoClient) {
+        console.warn('[ChatService] Paho MQTT client not available');
+        return;
+      }
+
+      const clientId = 'collabs_' + Math.random().toString(36).substring(2, 10);
+      this.mqttClient = new PahoClient(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
+
+      this.mqttClient.onConnectionLost = (responseObject) => {
+        this.isMqttConnected = false;
+        if (responseObject.errorCode !== 0) {
+          console.debug('[ChatService] Live WS connection lost:', responseObject.errorMessage);
+          this.scheduleMqttReconnect();
+        }
+      };
+
+      this.mqttClient.onMessageArrived = (message) => {
+        this.handleIncomingMqttMessage(message.payloadString);
+      };
+
+      this.connectMqtt();
+    } catch (err) {
+      console.warn('[ChatService] MQTT init failed:', err);
+    }
+  }
+
+  // Connect or reconnect to MQTT broker
+  connectMqtt() {
+    if (!this.mqttClient || this.isMqttConnected) return;
+
+    try {
+      this.mqttClient.connect({
+        useSSL: true,
+        timeout: 8,
+        keepAliveInterval: 30,
+        cleanSession: true,
+        onSuccess: () => {
+          this.isMqttConnected = true;
+          console.log('[ChatService] Live WebSocket connected to HiveMQ global channel');
+          try {
+            this.mqttClient.subscribe(MQTT_TOPIC, { qos: 1 });
+          } catch (subErr) {
+            console.warn('[ChatService] Subscribe failed:', subErr);
+          }
+        },
+        onFailure: (err) => {
+          this.isMqttConnected = false;
+          console.debug('[ChatService] Live WS connect attempt failed:', err?.errorMessage || err);
+          this.scheduleMqttReconnect();
+        }
+      });
+    } catch (err) {
+      console.warn('[ChatService] Error starting MQTT connect:', err);
+      this.scheduleMqttReconnect();
+    }
+  }
+
+  scheduleMqttReconnect() {
+    if (this.mqttReconnectTimer) return;
+    this.mqttReconnectTimer = setTimeout(() => {
+      this.mqttReconnectTimer = null;
+      this.connectMqtt();
+    }, 4000);
+  }
+
+  // Handle incoming live message received via WebSocket from another device
+  handleIncomingMqttMessage(payloadString) {
+    try {
+      const msg = JSON.parse(payloadString);
+      if (!msg || !msg.id) return;
+
+      const current = this.getAllMessages();
+      const existing = current.find((m) => m.id === msg.id);
+      if (existing) return; // Deduplicate
+
+      const updated = [...current, msg].sort(
+        (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
+      );
+
+      const trimmed = updated.slice(-400);
+      try {
+        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(trimmed));
+      } catch (e) {
+        console.warn('Failed to cache incoming MQTT message', e);
+      }
+
+      // Notify UI listeners with the incoming message for alerts & toasts
+      this.notifyListeners(msg);
+    } catch (err) {
+      console.debug('[ChatService] Error processing incoming MQTT packet:', err);
+    }
+  }
+
+  // Handle local BroadcastChannel (same machine multi-tab)
+  handleLocalBroadcast(msg) {
+    if (!msg || !msg.id) return;
+    const current = this.getAllMessages();
+    if (!current.some((m) => m.id === msg.id)) {
+      const updated = [...current, msg];
+      try {
+        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated.slice(-400)));
+      } catch {}
+    }
+    this.notifyListeners(msg);
+  }
+
+  // Publish message to MQTT broker
+  publishMqttMessage(message) {
+    if (!this.mqttClient || !this.isMqttConnected) {
+      // Reconnect if needed
+      this.connectMqtt();
+      return;
+    }
+
+    try {
+      const PahoModule = Paho.default || Paho;
+      const PahoMessage = PahoModule.Message || window?.Paho?.MQTT?.Message;
+      if (!PahoMessage) return;
+
+      const payload = JSON.stringify(message);
+      const mqttMsg = new PahoMessage(payload);
+      mqttMsg.destinationName = MQTT_TOPIC;
+      mqttMsg.qos = 1;
+      this.mqttClient.send(mqttMsg);
+    } catch (err) {
+      console.warn('[ChatService] Failed to send message over live WS:', err);
     }
   }
 
@@ -106,18 +261,17 @@ class ChatService {
     });
   }
 
-  // Fetch messages from global Cloudinary CDN
+  // Fetch messages from global Cloudinary CDN tag list (backfill for missed history)
   async fetchRemoteMessages() {
     if (this.isSyncing) return;
     this.isSyncing = true;
 
     try {
       const cacheBuster = Date.now();
-      const res = await fetch(`${CHAT_READ_URL}?t=${cacheBuster}`, {
+      const res = await fetch(`${CHAT_LIST_URL}?t=${cacheBuster}`, {
         method: 'GET',
         headers: {
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache, no-store, must-revalidate'
+          'Accept': 'application/json'
         }
       });
 
@@ -127,26 +281,51 @@ class ChatService {
       }
 
       const data = await res.json();
-      const remoteMessages = Array.isArray(data?.messages) ? data.messages : [];
+      const resources = Array.isArray(data?.resources) ? data.resources : [];
 
-      if (remoteMessages.length === 0) {
+      if (resources.length === 0) {
         this.isSyncing = false;
         return;
       }
 
       const localMessages = this.getAllMessages();
       const localIds = new Set(localMessages.map((m) => m.id));
+      const localCloudIds = new Set(localMessages.map((m) => m.cloudPublicId).filter(Boolean));
 
-      // Find incoming messages from other computers
-      const incomingNew = remoteMessages.filter((rm) => rm && rm.id && !localIds.has(rm.id));
+      // Find resources we haven't fetched into our local cache yet
+      const missingResources = resources.filter(
+        (r) => r.public_id && !localCloudIds.has(r.public_id)
+      );
 
-      if (incomingNew.length > 0) {
-        // Merge & preserve chronological order
-        const merged = [...localMessages, ...incomingNew].sort(
+      if (missingResources.length === 0) {
+        this.isSyncing = false;
+        return;
+      }
+
+      // Fetch the content of newly detected cloud messages (limit to 15 recent)
+      const fetchedNew = [];
+      for (const r of missingResources.slice(0, 15)) {
+        try {
+          const fileUrl = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/v${r.version}/${r.public_id}`;
+          const msgRes = await fetch(fileUrl, { cache: 'no-store' });
+          if (msgRes.ok) {
+            const msgJson = await msgRes.json();
+            if (msgJson && msgJson.id && !localIds.has(msgJson.id)) {
+              msgJson.cloudPublicId = r.public_id;
+              fetchedNew.push(msgJson);
+              localIds.add(msgJson.id);
+            }
+          }
+        } catch (fetchErr) {
+          console.debug('[ChatService] single message fetch skipped', fetchErr);
+        }
+      }
+
+      if (fetchedNew.length > 0) {
+        const merged = [...localMessages, ...fetchedNew].sort(
           (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
         );
 
-        // Keep last 400 messages
         const trimmed = merged.slice(-400);
 
         try {
@@ -155,8 +334,8 @@ class ChatService {
           console.warn('Failed to cache remote messages', e);
         }
 
-        // Notify with the latest incoming message for notifications
-        const latestNew = incomingNew[incomingNew.length - 1];
+        // Notify UI with the latest incoming message for alerts & toasts
+        const latestNew = fetchedNew[fetchedNew.length - 1];
         this.notifyListeners(latestNew);
       }
     } catch (err) {
@@ -166,27 +345,41 @@ class ChatService {
     }
   }
 
-  // Push updated messages array to Cloudinary CDN
-  async pushMessagesToCloud(messages) {
+  // Push an individual message asset to Cloudinary CDN tag list for persistent cloud archive
+  async pushMessageToCloud(message) {
     try {
-      const payload = JSON.stringify({
-        version: 1,
-        lastUpdated: new Date().toISOString(),
-        messages: (messages || []).slice(-400)
-      });
+      const payload = JSON.stringify(message);
+      const blob = new Blob([payload], { type: 'application/json' });
 
       const formData = new FormData();
-      const blob = new Blob([payload], { type: 'application/json' });
-      formData.append('file', blob);
+      formData.append('file', blob, 'msg.json');
       formData.append('upload_preset', UPLOAD_PRESET);
-      formData.append('public_id', CHAT_REGISTRY_PUBLIC_ID);
+      formData.append('tags', CHAT_TAG);
+      formData.append('folder', CHAT_FOLDER);
 
-      await fetch(CHAT_WRITE_URL, {
+      // Context metadata for instant listing inspection
+      const cleanText = (message.text || '').replace(/[|;=]/g, ' ').slice(0, 120);
+      const cleanSender = (message.sender?.name || '').replace(/[|;=]/g, ' ').slice(0, 40);
+      formData.append('context', `caption=${cleanText}|sender=${cleanSender}|role=${message.sender?.role || ''}`);
+
+      const res = await fetch(CHAT_UPLOAD_URL, {
         method: 'POST',
         body: formData
       });
+
+      if (res.ok) {
+        const data = await res.json();
+        message.cloudPublicId = data.public_id;
+        const current = this.getAllMessages();
+        const updated = current.map((m) => (m.id === message.id ? { ...m, cloudPublicId: data.public_id } : m));
+        try {
+          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated));
+        } catch {
+          // ignore
+        }
+      }
     } catch (err) {
-      console.warn('[ChatService] Failed to push to cloud registry', err);
+      console.warn('[ChatService] Network error pushing message to cloud:', err);
     }
   }
 
@@ -200,7 +393,7 @@ class ChatService {
         if (parsedAuth && parsedAuth.role) {
           return {
             id: parsedAuth.id || 'usr_' + parsedAuth.role,
-            name: parsedAuth.name || parsedAuth.shortName || 'Team Member',
+            name: parsedAuth.name || 'Team Member',
             role: parsedAuth.role
           };
         }
@@ -213,7 +406,7 @@ class ChatService {
     }
     const defaultUser = {
       id: 'usr_' + Math.random().toString(36).substring(2, 9),
-      name: 'B2B Client',
+      name: 'Team Member',
       role: 'b2b'
     };
     this.setCurrentUser(defaultUser);
@@ -261,7 +454,7 @@ class ChatService {
       roomId: roomId || 'general',
       sender: {
         id: user.id,
-        name: user.name || 'Anonymous',
+        name: user.name || 'Team Member',
         role: user.role || 'b2b'
       },
       text: (text || '').trim(),
@@ -286,11 +479,14 @@ class ChatService {
       });
     }
 
-    // 2. Notify local listeners instantly
+    // 2. Notify local listeners instantly (Zero lag for sender)
     this.notifyListeners(newMessage);
 
-    // 3. Sync to Global Cloud Registry (Sends to teammates across different laptops/phones)
-    this.pushMessagesToCloud(updated);
+    // 3. Publish to live WebSockets (<100ms instant delivery to other laptops/phones)
+    this.publishMqttMessage(newMessage);
+
+    // 4. Archive to Cloudinary tag listing in background (for permanent cloud history)
+    this.pushMessageToCloud(newMessage);
 
     return newMessage;
   }
