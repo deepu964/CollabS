@@ -72,7 +72,7 @@ class AuthService {
   }
 
   // Verify PIN for a selected role
-  verifyPin(roleId, enteredPin, displayName = '') {
+  verifyPin(roleId, enteredPin, displayName = '', email = '') {
     const roleConfig = TEAM_MEMBERS_CONFIG.find((r) => r.id === roleId);
     if (!roleConfig) {
       return { success: false, error: 'Invalid role selected' };
@@ -91,6 +91,7 @@ class AuthService {
       roleName: roleConfig.name,
       shortName: roleConfig.shortName,
       name: displayName.trim() || 'Team Member',
+      email: (email || '').trim().toLowerCase(),
       badgeColor: roleConfig.badgeColor,
       isAuthenticated: true,
       authenticatedAt: new Date().toISOString()

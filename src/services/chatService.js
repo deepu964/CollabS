@@ -10,6 +10,8 @@ import Paho from 'paho-mqtt';
 
 const STORAGE_KEY_MESSAGES = 'collabs_chat_messages_v1';
 const STORAGE_KEY_USER = 'collabs_chat_user_v1';
+const STORAGE_KEY_DELETED = 'collabs_chat_deleted_ids_v1';
+const STORAGE_KEY_CLEARED_ROOMS = 'collabs_chat_cleared_rooms_v1';
 const BROADCAST_CHANNEL_NAME = 'collabs_chat_bus_v1';
 
 // Global Cloud Sync Settings (Cloudinary Unsigned Tag Listing)
@@ -185,6 +187,39 @@ class ChatService {
       const msg = JSON.parse(payloadString);
       if (!msg || !msg.id) return;
 
+      // Handle team roster / email sync packets
+      if (msg.type === 'system_roster_update') {
+        if (msg.roleId && msg.email) {
+          try {
+            const raw = localStorage.getItem('collabs_team_role_emails_v1');
+            const emails = raw ? JSON.parse(raw) : {};
+            emails[msg.roleId] = String(msg.email).trim().toLowerCase();
+            localStorage.setItem('collabs_team_role_emails_v1', JSON.stringify(emails));
+            console.log(`[ChatService] Synced @${msg.roleId} email across devices: ${msg.email}`);
+          } catch (e) {
+            console.warn('Failed to cache synced team email', e);
+          }
+        }
+        return;
+      }
+
+      // Handle remote chat clear events
+      if (msg.type === 'system_chat_clear') {
+        if (msg.roomId === 'all') {
+          try {
+            localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+          } catch {}
+        } else if (msg.roomId) {
+          const current = this.getAllMessages();
+          const filtered = current.filter((m) => m.roomId !== msg.roomId);
+          try {
+            localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(filtered));
+          } catch {}
+        }
+        this.notifyListeners();
+        return;
+      }
+
       const current = this.getAllMessages();
       const existing = current.find((m) => m.id === msg.id);
       if (existing) return; // Deduplicate
@@ -210,6 +245,37 @@ class ChatService {
   // Handle local BroadcastChannel (same machine multi-tab)
   handleLocalBroadcast(msg) {
     if (!msg || !msg.id) return;
+
+    // Handle team roster / email sync packets across local tabs
+    if (msg.type === 'system_roster_update') {
+      if (msg.roleId && msg.email) {
+        try {
+          const raw = localStorage.getItem('collabs_team_role_emails_v1');
+          const emails = raw ? JSON.parse(raw) : {};
+          emails[msg.roleId] = String(msg.email).trim().toLowerCase();
+          localStorage.setItem('collabs_team_role_emails_v1', JSON.stringify(emails));
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // Handle local chat clear events across tabs
+    if (msg.type === 'system_chat_clear') {
+      if (msg.roomId === 'all') {
+        try {
+          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+        } catch {}
+      } else if (msg.roomId) {
+        const current = this.getAllMessages();
+        const filtered = current.filter((m) => m.roomId !== msg.roomId);
+        try {
+          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(filtered));
+        } catch {}
+      }
+      this.notifyListeners();
+      return;
+    }
+
     const current = this.getAllMessages();
     if (!current.some((m) => m.id === msg.id)) {
       const updated = [...current, msg];
@@ -218,6 +284,27 @@ class ChatService {
       } catch {}
     }
     this.notifyListeners(msg);
+  }
+
+  // Broadcast developer email to whole team across WebSockets & local tabs
+  broadcastRosterUpdate(roleId, email, senderName = '') {
+    if (!roleId || !email) return;
+    const packet = {
+      id: 'roster_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      type: 'system_roster_update',
+      roleId,
+      email: String(email).trim().toLowerCase(),
+      senderName: senderName || 'Team Member',
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      if (this.broadcastChannel) {
+        this.broadcastChannel.postMessage(packet);
+      }
+    } catch {}
+
+    this.publishMqttMessage(packet);
   }
 
   // Publish message to MQTT broker
@@ -291,10 +378,13 @@ class ChatService {
       const localMessages = this.getAllMessages();
       const localIds = new Set(localMessages.map((m) => m.id));
       const localCloudIds = new Set(localMessages.map((m) => m.cloudPublicId).filter(Boolean));
+      const deletedSet = this.getDeletedIds();
+      const clearedRooms = this.getClearedRooms();
+      const allClearedAt = clearedRooms['all'] || 0;
 
-      // Find resources we haven't fetched into our local cache yet
+      // Find resources we haven't fetched into our local cache and haven't deleted
       const missingResources = resources.filter(
-        (r) => r.public_id && !localCloudIds.has(r.public_id)
+        (r) => r.public_id && !localCloudIds.has(r.public_id) && !deletedSet.has(r.public_id)
       );
 
       if (missingResources.length === 0) {
@@ -310,10 +400,20 @@ class ChatService {
           const msgRes = await fetch(fileUrl, { cache: 'no-store' });
           if (msgRes.ok) {
             const msgJson = await msgRes.json();
-            if (msgJson && msgJson.id && !localIds.has(msgJson.id)) {
-              msgJson.cloudPublicId = r.public_id;
-              fetchedNew.push(msgJson);
-              localIds.add(msgJson.id);
+            if (msgJson && msgJson.id) {
+              if (deletedSet.has(msgJson.id)) continue;
+              const roomClearedAt = clearedRooms[msgJson.roomId] || 0;
+              const msgTime = new Date(msgJson.timestamp || 0).getTime();
+              if (msgTime <= allClearedAt || msgTime <= roomClearedAt) {
+                deletedSet.add(msgJson.id);
+                continue;
+              }
+
+              if (!localIds.has(msgJson.id)) {
+                msgJson.cloudPublicId = r.public_id;
+                fetchedNew.push(msgJson);
+                localIds.add(msgJson.id);
+              }
             }
           }
         } catch (fetchErr) {
@@ -334,9 +434,8 @@ class ChatService {
           console.warn('Failed to cache remote messages', e);
         }
 
-        // Notify UI with the latest incoming message for alerts & toasts
-        const latestNew = fetchedNew[fetchedNew.length - 1];
-        this.notifyListeners(latestNew);
+        // Notify UI silently for backfilled messages (DO NOT trigger alert toasts or sound chimes for old history)
+        this.notifyListeners();
       }
     } catch (err) {
       // Offline or network error
@@ -426,9 +525,9 @@ class ChatService {
   getAllMessages() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY_MESSAGES);
-      if (raw) {
+      if (raw !== null) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed)) {
           return parsed;
         }
       }
@@ -438,15 +537,133 @@ class ChatService {
     return INITIAL_MESSAGES;
   }
 
+  // Get deleted message IDs
+  getDeletedIds() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_DELETED);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return new Set(parsed);
+      }
+    } catch {}
+    return new Set();
+  }
+
+  recordDeleted(ids = []) {
+    try {
+      const current = this.getDeletedIds();
+      ids.forEach((id) => {
+        if (id) current.add(id);
+      });
+      localStorage.setItem(STORAGE_KEY_DELETED, JSON.stringify([...current]));
+    } catch (e) {
+      console.warn('Failed to record deleted chat message IDs', e);
+    }
+  }
+
+  getClearedRooms() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_CLEARED_ROOMS);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {};
+  }
+
+  recordClearedRoom(roomId) {
+    try {
+      const current = this.getClearedRooms();
+      current[roomId] = Date.now();
+      localStorage.setItem(STORAGE_KEY_CLEARED_ROOMS, JSON.stringify(current));
+    } catch {}
+  }
+
+  // Clear messages for a specific room / channel
+  clearRoomMessages(roomId) {
+    if (!roomId) return;
+    const current = this.getAllMessages();
+    const toDelete = current.filter((m) => m.roomId === roomId);
+    const deletedIds = toDelete.map((m) => m.id);
+    const deletedCloudIds = toDelete.map((m) => m.cloudPublicId).filter(Boolean);
+    this.recordDeleted([...deletedIds, ...deletedCloudIds]);
+    this.recordClearedRoom(roomId);
+
+    const updated = current.filter((m) => m.roomId !== roomId);
+    try {
+      localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Failed to clear room messages', e);
+    }
+    this.notifyListeners();
+    this.broadcastClearEvent(roomId);
+  }
+
+  // Clear all messages across all rooms
+  clearAllMessages() {
+    const current = this.getAllMessages();
+    const deletedIds = current.map((m) => m.id);
+    const deletedCloudIds = current.map((m) => m.cloudPublicId).filter(Boolean);
+    this.recordDeleted([...deletedIds, ...deletedCloudIds]);
+    this.recordClearedRoom('all');
+    DEFAULT_CHANNELS.forEach((ch) => this.recordClearedRoom(ch.id));
+
+    try {
+      localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+    } catch (e) {
+      console.warn('Failed to clear all messages', e);
+    }
+    this.notifyListeners();
+    this.broadcastClearEvent('all');
+  }
+
+  // Broadcast clear event to other tabs & devices
+  broadcastClearEvent(roomId) {
+    const packet = {
+      id: 'clear_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      type: 'system_chat_clear',
+      roomId,
+      timestamp: new Date().toISOString()
+    };
+    try {
+      if (this.broadcastChannel) this.broadcastChannel.postMessage(packet);
+    } catch {}
+    this.publishMqttMessage(packet);
+  }
+
+  // Upload voice note recording to Cloudinary
+  async uploadVoiceNote(audioBlob) {
+    if (!audioBlob) throw new Error('No audio data provided');
+
+    const formData = new FormData();
+    const ext = audioBlob.type.includes('mp4') ? 'm4a' : audioBlob.type.includes('ogg') ? 'ogg' : 'webm';
+    const fileName = `voice_${Date.now()}.${ext}`;
+    formData.append('file', audioBlob, fileName);
+    formData.append('upload_preset', UPLOAD_PRESET);
+    formData.append('folder', 'collabs/voice');
+    formData.append('tags', 'collabs,voice,chat');
+
+    const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`;
+    const res = await fetch(uploadUrl, {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || 'Failed to upload voice note');
+    }
+
+    return (data.secure_url || data.url || '').replace(/^http:\/\//i, 'https://');
+  }
+
   // Get messages for a specific room
   getRoomMessages(roomId) {
     const all = this.getAllMessages();
     return all.filter((m) => m.roomId === roomId);
   }
 
-  // Send a new message
-  sendMessage({ roomId, text, mentions = [] }) {
-    if (!text && mentions.length === 0) return null;
+  // Send a new message (text or voice)
+  sendMessage({ roomId, text, mentions = [], type = 'text', audioUrl = null, duration = 0 }) {
+    if (!text && mentions.length === 0 && !audioUrl) return null;
 
     const user = this.getCurrentUser();
     const newMessage = {
@@ -458,6 +675,9 @@ class ChatService {
         role: user.role || 'b2b'
       },
       text: (text || '').trim(),
+      type: type || (audioUrl ? 'voice' : 'text'),
+      audioUrl: audioUrl || null,
+      duration: Number(duration) || 0,
       mentions: Array.isArray(mentions) ? mentions : [],
       timestamp: new Date().toISOString()
     };

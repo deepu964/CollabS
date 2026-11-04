@@ -16,9 +16,18 @@ import {
   Smile,
   Hash,
   Megaphone,
-  Bell
+  Bell,
+  Mic,
+  Square,
+  Trash2,
+  Loader2,
+  Mail,
+  Check,
+  AlertCircle
 } from 'lucide-react';
 import { chatService, DEFAULT_CHANNELS, TEAM_ROLES } from '../services/chatService';
+import { emailService } from '../services/emailService';
+import VoiceMessagePlayer from './VoiceMessagePlayer';
 
 let sharedAudioCtx = null;
 function getAudioContext() {
@@ -54,11 +63,30 @@ export default function ChatWidget({
   // Notification States
   const [unreadCount, setUnreadCount] = useState(0);
   const [activeMentionToast, setActiveMentionToast] = useState(null);
+  const [emailStatusToast, setEmailStatusToast] = useState(null);
+
+  // Voice Note Recording States
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isUploadingVoice, setIsUploadingVoice] = useState(false);
+  const [voiceError, setVoiceError] = useState(null);
+  const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
+
+  // Profile Alert Email State
+  const [profileEmail, setProfileEmail] = useState(() =>
+    emailService.getRoleEmail(chatService.getCurrentUser().role)
+  );
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const originalTitleRef = useRef(typeof document !== 'undefined' ? document.title : 'CollabS');
   const titleIntervalRef = useRef(null);
+
+  // Voice recorder references
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
+  const audioStreamRef = useRef(null);
 
   // Unlock browser audio context on first user click or keypress
   useEffect(() => {
@@ -395,6 +423,125 @@ export default function ChatWidget({
     setStagedMentions((prev) => prev.filter((_, i) => i !== index));
   };
 
+    // Start voice recording
+  const handleStartVoiceRecording = async () => {
+    setVoiceError(null);
+    if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setVoiceError('Voice recording is not supported in this browser environment.');
+      setTimeout(() => setVoiceError(null), 4000);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+
+      let mimeType = 'audio/webm;codecs=opus';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+          else if (MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+          else if (MediaRecorder.isTypeSupported('audio/ogg')) mimeType = 'audio/ogg';
+          else mimeType = '';
+        }
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(100);
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.error('Failed to access microphone:', err);
+      setVoiceError('Microphone permission denied. Please allow microphone access in your browser.');
+      setTimeout(() => setVoiceError(null), 5000);
+    }
+  };
+
+  // Cancel voice recording without sending
+  const handleCancelVoiceRecording = () => {
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.onstop = null;
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current = null;
+    }
+    audioChunksRef.current = [];
+    setIsRecording(false);
+    setRecordingSeconds(0);
+  };
+
+  // Finish and upload voice note
+  const handleSendVoiceRecording = async () => {
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+
+    const duration = recordingSeconds || 1;
+    setIsRecording(false);
+    setIsUploadingVoice(true);
+
+    mediaRecorderRef.current.onstop = async () => {
+      try {
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: mediaRecorderRef.current.mimeType || 'audio/webm'
+        });
+
+        if (audioStreamRef.current) {
+          audioStreamRef.current.getTracks().forEach((t) => t.stop());
+          audioStreamRef.current = null;
+        }
+
+        const audioUrl = await chatService.uploadVoiceNote(audioBlob);
+
+        chatService.sendMessage({
+          roomId: activeRoomId,
+          text: `🎙️ Voice Note (${duration}s)`,
+          type: 'voice',
+          audioUrl,
+          duration,
+          mentions: stagedMentions
+        });
+
+        setStagedMentions([]);
+      } catch (err) {
+        console.error('Failed to upload/send voice note:', err);
+        setVoiceError('Failed to upload voice note. Please try again.');
+        setTimeout(() => setVoiceError(null), 4000);
+      } finally {
+        setIsUploadingVoice(false);
+        setRecordingSeconds(0);
+        audioChunksRef.current = [];
+      }
+    };
+
+    try {
+      mediaRecorderRef.current.stop();
+    } catch (e) {
+      console.warn('Error stopping mediaRecorder', e);
+      setIsUploadingVoice(false);
+    }
+  };
+
   // Send message
   const handleSendMessage = (e) => {
     e?.preventDefault();
@@ -431,6 +578,48 @@ export default function ChatWidget({
       mentions: finalMentions
     });
 
+    // Dispatch email notification to mentioned team members/roles
+    if (finalMentions.length > 0) {
+      emailService
+        .notifyMentionedRoles({
+          mentions: finalMentions,
+          sender: currentUser,
+          roomId: activeRoomId,
+          channelName: activeChannel?.name
+        })
+        .then((dispatched) => {
+          const sentItems = dispatched.filter((d) => d.sent);
+          const failedItems = dispatched.filter((d) => !d.sent && d.error);
+          const throttledItems = dispatched.filter((d) => !d.sent && d.reason && d.reason.includes('Cooldown'));
+
+          if (sentItems.length > 0) {
+            const names = sentItems.map((s) => s.recipientName).join(', ');
+            setEmailStatusToast({
+              text: sentItems.some((s) => s.simulated)
+                ? `📧 Mention alert triggered for ${names} (Simulated mode)`
+                : `📧 Email alert dispatched to ${names}!`
+            });
+            setTimeout(() => setEmailStatusToast(null), 5000);
+          } else if (throttledItems.length > 0) {
+            setEmailStatusToast({
+              isError: false,
+              text: `⏳ Anti-spam cooldown: Email was already sent recently. Please wait 15 seconds before re-mentioning.`
+            });
+            setTimeout(() => setEmailStatusToast(null), 5000);
+          } else if (failedItems.length > 0) {
+            const errMsg = failedItems[0].error;
+            setEmailStatusToast({
+              isError: true,
+              text: `⚠️ EmailJS alert failed: ${errMsg}`
+            });
+            setTimeout(() => setEmailStatusToast(null), 8000);
+          }
+        })
+        .catch((err) => {
+          console.warn('[ChatWidget] Email notification error:', err);
+        });
+    }
+
     setInputText('');
     setStagedMentions([]);
     setShowMentionMenu(false);
@@ -449,6 +638,46 @@ export default function ChatWidget({
 
   return (
     <>
+      {/* Email Notification Status Toast */}
+      {emailStatusToast && (
+        <div className={`collabs-mention-toast-alert email-toast ${emailStatusToast.isError ? 'email-toast-error' : ''}`} role="status">
+          <div className="mention-toast-icon-box email-icon-box" style={emailStatusToast.isError ? { backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' } : {}}>
+            {emailStatusToast.isError ? <AlertCircle size={16} /> : <Mail size={16} />}
+          </div>
+          <div className="mention-toast-content">
+            <p className="toast-message-snippet">{emailStatusToast.text}</p>
+          </div>
+          <button
+            type="button"
+            className="toast-dismiss-x-btn"
+            onClick={() => setEmailStatusToast(null)}
+            aria-label="Dismiss"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {/* Voice Recording Error Toast */}
+      {voiceError && (
+        <div className="collabs-mention-toast-alert error-toast" role="alert">
+          <div className="mention-toast-icon-box error-icon-box">
+            <AlertCircle size={16} />
+          </div>
+          <div className="mention-toast-content">
+            <p className="toast-message-snippet">{voiceError}</p>
+          </div>
+          <button
+            type="button"
+            className="toast-dismiss-x-btn"
+            onClick={() => setVoiceError(null)}
+            aria-label="Dismiss"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {/* Floating In-App Mention Toast Alert Banner */}
       {activeMentionToast && (
         <div className="collabs-mention-toast-alert" role="alert">
@@ -550,6 +779,17 @@ export default function ChatWidget({
             </div>
 
             <div className="header-actions-group">
+              {/* Clear Chat Button */}
+              <button
+                type="button"
+                className="chat-clear-trigger-btn"
+                onClick={() => setShowClearConfirmModal(true)}
+                title="Clear chat messages"
+                aria-label="Clear chat messages"
+              >
+                <Trash2 size={13} />
+              </button>
+
               {/* Test Sound & Alert Button */}
               <button
                 type="button"
@@ -600,6 +840,53 @@ export default function ChatWidget({
             </div>
           </div>
 
+          {/* Clear Chat Confirmation Modal */}
+          {showClearConfirmModal && (
+            <div className="chat-clear-dialog-overlay" onClick={() => setShowClearConfirmModal(false)}>
+              <div className="chat-clear-dialog-card" onClick={(e) => e.stopPropagation()}>
+                <div className="chat-clear-dialog-header">
+                  <div className="chat-clear-dialog-icon">
+                    <Trash2 size={18} />
+                  </div>
+                  <div>
+                    <h4 className="chat-clear-dialog-title">Clear Chat History</h4>
+                    <p className="chat-clear-dialog-subtitle">Free up space and remove conversation messages.</p>
+                  </div>
+                </div>
+
+                <div className="chat-clear-dialog-actions">
+                  <button
+                    type="button"
+                    className="chat-clear-opt-btn primary"
+                    onClick={() => {
+                      chatService.clearRoomMessages(activeRoomId);
+                      setShowClearConfirmModal(false);
+                    }}
+                  >
+                    Clear #{activeChannel.name} only
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-clear-opt-btn danger"
+                    onClick={() => {
+                      chatService.clearAllMessages();
+                      setShowClearConfirmModal(false);
+                    }}
+                  >
+                    Clear all channels
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-clear-opt-btn cancel"
+                    onClick={() => setShowClearConfirmModal(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* User Profile Switcher Popover */}
           {showProfileModal && (
             <div className="chat-profile-popover">
@@ -648,6 +935,27 @@ export default function ChatWidget({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Role Email Configuration */}
+              <div className="popover-field">
+                <label className="field-with-icon">
+                  <Mail size={12} />
+                  <span>Mention Alert Email:</span>
+                </label>
+                <input
+                  type="email"
+                  value={profileEmail}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setProfileEmail(val);
+                    emailService.setRoleEmail(currentUser.role, val);
+                  }}
+                  placeholder={`e.g. ${currentUser.role}@yourteam.com`}
+                />
+                <span className="popover-field-hint">
+                  When someone mentions @{currentUser.name} or your role, a notification email is sent to this address.
+                </span>
               </div>
             </div>
           )}
@@ -701,12 +1009,27 @@ export default function ChatWidget({
 
                       {/* Main Message Bubble */}
                       <div className="message-bubble-body">
-                        <p className="message-text">{msg.text}</p>
+                        {msg.type === 'voice' || msg.audioUrl ? (
+                          <VoiceMessagePlayer
+                            audioUrl={msg.audioUrl}
+                            duration={msg.duration}
+                            isMe={isMe}
+                          />
+                        ) : null}
+
+                        {(!msg.type || msg.type === 'text' || (!msg.audioUrl && msg.text)) && (
+                          <p className="message-text">
+                            {msg.text || (msg.mentions?.filter((m) => m.type === 'role' || m.id === 'all').map((m) => `@${m.name}`).join(' ')) || ''}
+                          </p>
+                        )}
 
                         {/* Interactive Mention Chips (Docs / Images) */}
-                        {Array.isArray(msg.mentions) && msg.mentions.length > 0 && (
+                        {Array.isArray(msg.mentions) &&
+                          msg.mentions.filter((m) => m.type === 'doc' || m.type === 'image').length > 0 && (
                           <div className="message-mentions-container">
-                            {msg.mentions.map((m, idx) => (
+                            {msg.mentions
+                              .filter((m) => m.type === 'doc' || m.type === 'image')
+                              .map((m, idx) => (
                               <button
                                 key={idx}
                                 type="button"
@@ -727,21 +1050,11 @@ export default function ChatWidget({
                                     <span className="chip-label">{m.title}</span>
                                     <ExternalLink size={11} className="chip-link-icon" />
                                   </>
-                                ) : m.type === 'image' ? (
+                                ) : (
                                   <>
                                     <ImageIcon size={13} className="chip-icon img-icon" />
                                     <span className="chip-label">{m.title}</span>
                                     <ExternalLink size={11} className="chip-link-icon" />
-                                  </>
-                                ) : m.isBroadcast || m.id === 'all' || m.name === 'all' ? (
-                                  <>
-                                    <Megaphone size={12} className="chip-icon broadcast-icon" />
-                                    <span className="chip-label chip-broadcast-label">@all</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <AtSign size={12} className="chip-icon role-icon" />
-                                    <span className="chip-label">@{m.name}</span>
                                   </>
                                 )}
                               </button>
@@ -894,81 +1207,135 @@ export default function ChatWidget({
           )}
 
           {/* Input Footer */}
-          <form className="chat-input-footer-form" onSubmit={handleSendMessage}>
-            <div className="input-toolbar-left">
-              {/* @ Mention Trigger Button */}
-              <button
-                type="button"
-                className={`chat-tool-btn ${showMentionMenu ? 'active' : ''}`}
-                onClick={() => setShowMentionMenu(!showMentionMenu)}
-                title="Mention doc, image or role (@)"
-              >
-                <AtSign size={15} />
-              </button>
+          {isRecording ? (
+            <div className="chat-voice-recording-dock">
+              <div className="recording-status-group">
+                <span className="recording-pulsing-dot" />
+                <span className="recording-timer">
+                  {Math.floor(recordingSeconds / 60)}:
+                  {(recordingSeconds % 60).toString().padStart(2, '0')}
+                </span>
+                <div className="recording-live-bars">
+                  <span className="rec-bar" />
+                  <span className="rec-bar" />
+                  <span className="rec-bar" />
+                  <span className="rec-bar" />
+                  <span className="rec-bar" />
+                </div>
+                <span className="recording-hint-text">Recording voice note...</span>
+              </div>
 
-              {/* Attach Current Page / Ref Button */}
-              <button
-                type="button"
-                className="chat-tool-btn"
-                onClick={handleAttachCurrentView}
-                title="Attach current doc or screen"
-              >
-                <Paperclip size={15} />
-              </button>
+              <div className="recording-actions-group">
+                <button
+                  type="button"
+                  className="voice-cancel-btn"
+                  onClick={handleCancelVoiceRecording}
+                  title="Discard recording"
+                >
+                  <Trash2 size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="voice-send-btn"
+                  onClick={handleSendVoiceRecording}
+                  title="Send voice note"
+                >
+                  <Send size={15} />
+                </button>
+              </div>
             </div>
+          ) : isUploadingVoice ? (
+            <div className="chat-voice-uploading-dock">
+              <Loader2 size={16} className="voice-spinner-icon" />
+              <span>Uploading & sending voice note...</span>
+            </div>
+          ) : (
+            <form className="chat-input-footer-form" onSubmit={handleSendMessage}>
+              <div className="input-toolbar-left">
+                {/* @ Mention Trigger Button */}
+                <button
+                  type="button"
+                  className={`chat-tool-btn ${showMentionMenu ? 'active' : ''}`}
+                  onClick={() => setShowMentionMenu(!showMentionMenu)}
+                  title="Mention doc, image or role (@)"
+                >
+                  <AtSign size={15} />
+                </button>
 
-            <textarea
-              ref={inputRef}
-              rows={1}
-              className="chat-textarea-input"
-              placeholder={`Ask doubt in #${activeChannel.name}... (type @ to reference doc/image)`}
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={(e) => {
-                if (showMentionMenu) {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setShowMentionMenu(false);
-                    return;
-                  }
-                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                    let targetItem = null;
-                    let targetType = null;
-                    if (mentionTab === 'roles' && filteredRoles.length > 0) {
-                      targetItem = filteredRoles[0];
-                      targetType = 'role';
-                    } else if (mentionTab === 'docs' && filteredDocs.length > 0) {
-                      targetItem = filteredDocs[0];
-                      targetType = 'doc';
-                    } else if (mentionTab === 'images' && filteredReferences.length > 0) {
-                      targetItem = filteredReferences[0];
-                      targetType = 'image';
-                    }
+                {/* Attach Current Page / Ref Button */}
+                <button
+                  type="button"
+                  className="chat-tool-btn"
+                  onClick={handleAttachCurrentView}
+                  title="Attach current doc or screen"
+                >
+                  <Paperclip size={15} />
+                </button>
 
-                    if (targetItem && targetType) {
+                {/* Voice Note Record Trigger Button */}
+                <button
+                  type="button"
+                  className="chat-tool-btn chat-mic-btn"
+                  onClick={handleStartVoiceRecording}
+                  title="Record voice note (Click to start)"
+                >
+                  <Mic size={15} />
+                </button>
+              </div>
+
+              <textarea
+                ref={inputRef}
+                rows={1}
+                className="chat-textarea-input"
+                placeholder={`Ask doubt in #${activeChannel.name}... (type @ or use 🎙️)`}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={(e) => {
+                  if (showMentionMenu) {
+                    if (e.key === 'Escape') {
                       e.preventDefault();
-                      handleSelectMention(targetItem, targetType);
+                      setShowMentionMenu(false);
                       return;
                     }
+                    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                      let targetItem = null;
+                      let targetType = null;
+                      if (mentionTab === 'roles' && filteredRoles.length > 0) {
+                        targetItem = filteredRoles[0];
+                        targetType = 'role';
+                      } else if (mentionTab === 'docs' && filteredDocs.length > 0) {
+                        targetItem = filteredDocs[0];
+                        targetType = 'doc';
+                      } else if (mentionTab === 'images' && filteredReferences.length > 0) {
+                        targetItem = filteredReferences[0];
+                        targetType = 'image';
+                      }
+
+                      if (targetItem && targetType) {
+                        e.preventDefault();
+                        handleSelectMention(targetItem, targetType);
+                        return;
+                      }
+                    }
                   }
-                }
 
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-            />
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+              />
 
-            <button
-              type="submit"
-              disabled={!inputText.trim() && stagedMentions.length === 0}
-              className="chat-send-submit-btn"
-              title="Send message (Enter)"
-            >
-              <Send size={15} />
-            </button>
-          </form>
+              <button
+                type="submit"
+                disabled={!inputText.trim() && stagedMentions.length === 0}
+                className="chat-send-submit-btn"
+                title="Send message (Enter)"
+              >
+                <Send size={15} />
+              </button>
+            </form>
+          )}
         </div>
       )}
     </>
