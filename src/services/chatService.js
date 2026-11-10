@@ -187,22 +187,6 @@ class ChatService {
       const msg = JSON.parse(payloadString);
       if (!msg || !msg.id) return;
 
-      // Handle team roster / email sync packets
-      if (msg.type === 'system_roster_update') {
-        if (msg.roleId && msg.email) {
-          try {
-            const raw = localStorage.getItem('collabs_team_role_emails_v1');
-            const emails = raw ? JSON.parse(raw) : {};
-            emails[msg.roleId] = String(msg.email).trim().toLowerCase();
-            localStorage.setItem('collabs_team_role_emails_v1', JSON.stringify(emails));
-            console.log(`[ChatService] Synced @${msg.roleId} email across devices: ${msg.email}`);
-          } catch (e) {
-            console.warn('Failed to cache synced team email', e);
-          }
-        }
-        return;
-      }
-
       // Handle remote chat clear events
       if (msg.type === 'system_chat_clear') {
         if (msg.roomId === 'all') {
@@ -246,19 +230,6 @@ class ChatService {
   handleLocalBroadcast(msg) {
     if (!msg || !msg.id) return;
 
-    // Handle team roster / email sync packets across local tabs
-    if (msg.type === 'system_roster_update') {
-      if (msg.roleId && msg.email) {
-        try {
-          const raw = localStorage.getItem('collabs_team_role_emails_v1');
-          const emails = raw ? JSON.parse(raw) : {};
-          emails[msg.roleId] = String(msg.email).trim().toLowerCase();
-          localStorage.setItem('collabs_team_role_emails_v1', JSON.stringify(emails));
-        } catch (e) {}
-      }
-      return;
-    }
-
     // Handle local chat clear events across tabs
     if (msg.type === 'system_chat_clear') {
       if (msg.roomId === 'all') {
@@ -284,27 +255,6 @@ class ChatService {
       } catch {}
     }
     this.notifyListeners(msg);
-  }
-
-  // Broadcast developer email to whole team across WebSockets & local tabs
-  broadcastRosterUpdate(roleId, email, senderName = '') {
-    if (!roleId || !email) return;
-    const packet = {
-      id: 'roster_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      type: 'system_roster_update',
-      roleId,
-      email: String(email).trim().toLowerCase(),
-      senderName: senderName || 'Team Member',
-      timestamp: new Date().toISOString()
-    };
-
-    try {
-      if (this.broadcastChannel) {
-        this.broadcastChannel.postMessage(packet);
-      }
-    } catch {}
-
-    this.publishMqttMessage(packet);
   }
 
   // Publish message to MQTT broker

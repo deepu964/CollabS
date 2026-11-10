@@ -10,11 +10,9 @@ import {
   ChevronLeft,
   KeyRound,
   User,
-  Mail,
   AlertCircle
 } from 'lucide-react';
 import { TEAM_MEMBERS_CONFIG, authService } from '../services/authService';
-import { emailService } from '../services/emailService';
 
 const ICON_COMPONENTS = {
   ShieldCheck,
@@ -28,7 +26,6 @@ export default function TeamAuthGate({ onAuthenticated }) {
   const [selectedRole, setSelectedRole] = useState(null);
   const [pin, setPin] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [userEmail, setUserEmail] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [shake, setShake] = useState(false);
@@ -38,9 +35,6 @@ export default function TeamAuthGate({ onAuthenticated }) {
     setPin('');
     setErrorMsg('');
     setDisplayName('');
-    // Pre-fill email previously saved on this laptop or from .env
-    const savedEmail = emailService.getRoleEmail(role.id) || '';
-    setUserEmail(savedEmail);
   };
 
   const handleSubmit = (e) => {
@@ -52,23 +46,13 @@ export default function TeamAuthGate({ onAuthenticated }) {
       return;
     }
 
-    const cleanEmail = userEmail.trim().toLowerCase();
-    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMsg('Please enter a valid email address (e.g. name@company.com)');
-      triggerShake();
-      return;
-    }
-
     setIsSubmitting(true);
     setErrorMsg('');
 
     setTimeout(() => {
-      const result = authService.verifyPin(selectedRole.id, pin, displayName, cleanEmail);
+      const result = authService.verifyPin(selectedRole.id, pin, displayName);
 
       if (result.success) {
-        if (cleanEmail) {
-          emailService.registerUserEmail(selectedRole.id, cleanEmail, displayName || selectedRole.shortName);
-        }
         onAuthenticated(result.member);
       } else {
         setErrorMsg(result.error || 'Incorrect PIN');
@@ -173,25 +157,6 @@ export default function TeamAuthGate({ onAuthenticated }) {
                 onChange={(e) => setDisplayName(e.target.value)}
                 autoFocus
               />
-            </div>
-
-            {/* Email Input (Pre-filled & remembered on laptop) */}
-            <div className="auth-input-group">
-              <label htmlFor="auth-email-input">
-                <Mail size={13} />
-                <span>Your Alert Email (for @mentions):</span>
-              </label>
-              <input
-                id="auth-email-input"
-                type="email"
-                className="auth-text-field"
-                placeholder={`e.g. ${selectedRole.id}@company.com`}
-                value={userEmail}
-                onChange={(e) => setUserEmail(e.target.value)}
-              />
-              <span className="auth-input-hint">
-                Stored on this laptop. When teammates mention @{selectedRole.id}, alerts go here.
-              </span>
             </div>
 
             {/* PIN Input */}

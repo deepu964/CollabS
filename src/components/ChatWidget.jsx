@@ -21,12 +21,10 @@ import {
   Square,
   Trash2,
   Loader2,
-  Mail,
   Check,
   AlertCircle
 } from 'lucide-react';
 import { chatService, DEFAULT_CHANNELS, TEAM_ROLES } from '../services/chatService';
-import { emailService } from '../services/emailService';
 import VoiceMessagePlayer from './VoiceMessagePlayer';
 
 let sharedAudioCtx = null;
@@ -63,7 +61,6 @@ export default function ChatWidget({
   // Notification States
   const [unreadCount, setUnreadCount] = useState(0);
   const [activeMentionToast, setActiveMentionToast] = useState(null);
-  const [emailStatusToast, setEmailStatusToast] = useState(null);
 
   // Voice Note Recording States
   const [isRecording, setIsRecording] = useState(false);
@@ -71,11 +68,6 @@ export default function ChatWidget({
   const [isUploadingVoice, setIsUploadingVoice] = useState(false);
   const [voiceError, setVoiceError] = useState(null);
   const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
-
-  // Profile Alert Email State
-  const [profileEmail, setProfileEmail] = useState(() =>
-    emailService.getRoleEmail(chatService.getCurrentUser().role)
-  );
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -578,48 +570,6 @@ export default function ChatWidget({
       mentions: finalMentions
     });
 
-    // Dispatch email notification to mentioned team members/roles
-    if (finalMentions.length > 0) {
-      emailService
-        .notifyMentionedRoles({
-          mentions: finalMentions,
-          sender: currentUser,
-          roomId: activeRoomId,
-          channelName: activeChannel?.name
-        })
-        .then((dispatched) => {
-          const sentItems = dispatched.filter((d) => d.sent);
-          const failedItems = dispatched.filter((d) => !d.sent && d.error);
-          const throttledItems = dispatched.filter((d) => !d.sent && d.reason && d.reason.includes('Cooldown'));
-
-          if (sentItems.length > 0) {
-            const names = sentItems.map((s) => s.recipientName).join(', ');
-            setEmailStatusToast({
-              text: sentItems.some((s) => s.simulated)
-                ? `📧 Mention alert triggered for ${names} (Simulated mode)`
-                : `📧 Email alert dispatched to ${names}!`
-            });
-            setTimeout(() => setEmailStatusToast(null), 5000);
-          } else if (throttledItems.length > 0) {
-            setEmailStatusToast({
-              isError: false,
-              text: `⏳ Anti-spam cooldown: Email was already sent recently. Please wait 15 seconds before re-mentioning.`
-            });
-            setTimeout(() => setEmailStatusToast(null), 5000);
-          } else if (failedItems.length > 0) {
-            const errMsg = failedItems[0].error;
-            setEmailStatusToast({
-              isError: true,
-              text: `⚠️ EmailJS alert failed: ${errMsg}`
-            });
-            setTimeout(() => setEmailStatusToast(null), 8000);
-          }
-        })
-        .catch((err) => {
-          console.warn('[ChatWidget] Email notification error:', err);
-        });
-    }
-
     setInputText('');
     setStagedMentions([]);
     setShowMentionMenu(false);
@@ -638,26 +588,6 @@ export default function ChatWidget({
 
   return (
     <>
-      {/* Email Notification Status Toast */}
-      {emailStatusToast && (
-        <div className={`collabs-mention-toast-alert email-toast ${emailStatusToast.isError ? 'email-toast-error' : ''}`} role="status">
-          <div className="mention-toast-icon-box email-icon-box" style={emailStatusToast.isError ? { backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' } : {}}>
-            {emailStatusToast.isError ? <AlertCircle size={16} /> : <Mail size={16} />}
-          </div>
-          <div className="mention-toast-content">
-            <p className="toast-message-snippet">{emailStatusToast.text}</p>
-          </div>
-          <button
-            type="button"
-            className="toast-dismiss-x-btn"
-            onClick={() => setEmailStatusToast(null)}
-            aria-label="Dismiss"
-          >
-            <X size={13} />
-          </button>
-        </div>
-      )}
-
       {/* Voice Recording Error Toast */}
       {voiceError && (
         <div className="collabs-mention-toast-alert error-toast" role="alert">
@@ -935,27 +865,6 @@ export default function ChatWidget({
                     </button>
                   ))}
                 </div>
-              </div>
-
-              {/* Role Email Configuration */}
-              <div className="popover-field">
-                <label className="field-with-icon">
-                  <Mail size={12} />
-                  <span>Mention Alert Email:</span>
-                </label>
-                <input
-                  type="email"
-                  value={profileEmail}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setProfileEmail(val);
-                    emailService.setRoleEmail(currentUser.role, val);
-                  }}
-                  placeholder={`e.g. ${currentUser.role}@yourteam.com`}
-                />
-                <span className="popover-field-hint">
-                  When someone mentions @{currentUser.name} or your role, a notification email is sent to this address.
-                </span>
               </div>
             </div>
           )}
