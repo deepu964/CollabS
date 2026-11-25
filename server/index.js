@@ -47,13 +47,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Start Server
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[CollabS Backend] Server running on http://localhost:${PORT}`);
-});
+// Start Server (only when running as standalone Node process, not in Vercel Serverless)
+if (!process.env.VERCEL) {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[CollabS Backend] Server running on http://localhost:${PORT}`);
+  });
 
-server.on('error', (err) => {
-  console.error('[CollabS Backend] Server error:', err);
-});
+  server.on('error', (err) => {
+    console.error('[CollabS Backend] Server error:', err);
+  });
+}
 
 export default app;

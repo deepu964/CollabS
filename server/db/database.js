@@ -1,10 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DATA_DIR = path.join(__dirname, '..', 'data');
+
+const isVercel = Boolean(process.env.VERCEL);
+const SEED_DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = isVercel ? path.join(os.tmpdir(), 'collabs_data') : SEED_DATA_DIR;
+
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 const INVITATIONS_FILE = path.join(DATA_DIR, 'invitations.json');
@@ -15,21 +20,25 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-if (!fs.existsSync(USERS_FILE)) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify([], null, 2), 'utf8');
+function ensureFileWithSeed(destFile, seedFileName) {
+  if (!fs.existsSync(destFile)) {
+    const seedPath = path.join(SEED_DATA_DIR, seedFileName);
+    if (isVercel && fs.existsSync(seedPath)) {
+      try {
+        fs.copyFileSync(seedPath, destFile);
+        return;
+      } catch (err) {
+        console.error(`[Database] Error seeding ${seedFileName}:`, err);
+      }
+    }
+    fs.writeFileSync(destFile, JSON.stringify([], null, 2), 'utf8');
+  }
 }
 
-if (!fs.existsSync(PROJECTS_FILE)) {
-  fs.writeFileSync(PROJECTS_FILE, JSON.stringify([], null, 2), 'utf8');
-}
-
-if (!fs.existsSync(INVITATIONS_FILE)) {
-  fs.writeFileSync(INVITATIONS_FILE, JSON.stringify([], null, 2), 'utf8');
-}
-
-if (!fs.existsSync(MESSAGES_FILE)) {
-  fs.writeFileSync(MESSAGES_FILE, JSON.stringify([], null, 2), 'utf8');
-}
+ensureFileWithSeed(USERS_FILE, 'users.json');
+ensureFileWithSeed(PROJECTS_FILE, 'projects.json');
+ensureFileWithSeed(INVITATIONS_FILE, 'invitations.json');
+ensureFileWithSeed(MESSAGES_FILE, 'messages.json');
 
 /**
  * File-backed atomic JSON database for Users.
