@@ -52,10 +52,6 @@ export default function SwitchRoleModal({
 
         {/* Active Session Info Box */}
         <div className="switch-modal-session-card">
-          <span
-            className="session-role-dot"
-            style={{ backgroundColor: member.badgeColor || '#3b82f6' }}
-          />
           <div className="session-info-text">
             <span className="session-member-name">{member.name}</span>
             <span className="session-member-role">{member.roleName || member.shortName}</span>

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "msg_1795150358810_u615",
+    "projectId": "prj_1795150358754_r0wg0m",
+    "roomId": "general",
+    "sender": {
+      "id": "usr_1795150358594_7ym33x",
+      "name": "Bob Lead",
+      "email": "bob_1795150358395@test.com",
+      "role": "Project Lead"
+    },
+    "text": "Welcome to Beta portfolio project! Dark theme is active.",
+    "type": "text",
+    "audioUrl": null,
+    "duration": 0,
+    "mentions": [],
+    "timestamp": "2026-11-20T04:52:38.810Z"
+  },
+  {
+    "id": "msg_1795591912403_k03x",
+    "projectId": "prj_1795591821742_rbd2xk",
+    "roomId": "general",
+    "sender": {
+      "id": "usr_1795591794178_z7mkop",
+      "name": "Deepak",
+      "email": "deepakbcr@gmail.com",
+      "role": "Project Lead"
+    },
+    "text": "hy",
+    "type": "text",
+    "audioUrl": null,
+    "duration": 0,
+    "mentions": [],
+    "timestamp": "2026-11-25T07:31:52.403Z"
+  },
+  {
+    "id": "msg_1795591931293_w7qo",
+    "projectId": "prj_1795591821742_rbd2xk",
+    "roomId": "general",
+    "sender": {
+      "id": "usr_1795591794178_z7mkop",
+      "name": "Deepak",
+      "email": "deepakbcr@gmail.com",
+      "role": "Project Lead"
+    },
+    "text": "hlo",
+    "type": "text",
+    "audioUrl": null,
+    "duration": 0,
+    "mentions": [],
+    "timestamp": "2026-11-25T07:32:11.294Z"
+  }
+]

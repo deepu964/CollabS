@@ -44,10 +44,12 @@ export default function ChatWidget({
   activeCategory = null,
   activeReference = null,
   onOpenReference = () => {},
-  onOpenDoc = () => {}
+  onOpenDoc = () => {},
+  activeProject = null,
+  currentUser: propUser = null
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [activeRoomId, setActiveRoomId] = useState('backend-help');
+  const [activeRoomId, setActiveRoomId] = useState('general');
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [stagedMentions, setStagedMentions] = useState([]);
@@ -170,6 +172,76 @@ export default function ChatWidget({
     return () => clearTimeout(t);
   }, [activeMentionToast]);
 
+  // Project-Scoped Dynamic Channels (General, Sides / Teams, Docs, Lead Line)
+  const projectChannels = useMemo(() => {
+    if (!activeProject) return DEFAULT_CHANNELS;
+    const base = [
+      { id: 'general', name: 'general', description: 'General discussion', type: 'channel' }
+    ];
+    if (Array.isArray(activeProject.teams)) {
+      activeProject.teams.forEach((t) => {
+        base.push({
+          id: `team-${t.id}`,
+          name: t.name.toLowerCase().replace(/\s+/g, '-'),
+          description: `${t.name} discussions`,
+          type: 'channel',
+          teamId: t.id
+        });
+      });
+    }
+    base.push(
+      { id: 'docs-feedback', name: 'docs-feedback', description: 'Docs review', type: 'channel' },
+      { id: 'lead-line', name: 'lead-line', description: 'Lead channel', type: 'channel' }
+    );
+    return base;
+  }, [activeProject]);
+
+  // Project-Scoped Dynamic Mentions List (@all, @lead, custom teams, individual members)
+  const projectRoles = useMemo(() => {
+    const list = [
+      { id: 'all', name: 'all', displayName: 'All Members', badgeColor: '#f97316', isBroadcast: true },
+      { id: 'lead', name: 'Lead', displayName: 'Project Lead', badgeColor: '#f59e0b' }
+    ];
+    if (Array.isArray(activeProject?.teams)) {
+      activeProject.teams.forEach((t) => {
+        list.push({
+          id: `team_${t.id}`,
+          name: t.name,
+          displayName: `${t.name} Team`,
+          badgeColor: '#10b981'
+        });
+      });
+    }
+    if (Array.isArray(activeProject?.members)) {
+      activeProject.members.forEach((m) => {
+        list.push({
+          id: `member_${m.userId}`,
+          name: m.email?.split('@')[0] || 'member',
+          displayName: m.email,
+          badgeColor: '#3b82f6',
+          isMember: true
+        });
+      });
+    }
+    return list;
+  }, [activeProject]);
+
+  // Sync active project scope with ChatService
+  useEffect(() => {
+    if (activeProject) {
+      chatService.setProject(activeProject);
+      setCurrentUser(chatService.getCurrentUser());
+      setMessages(chatService.getRoomMessages(activeRoomId));
+    }
+  }, [activeProject]);
+
+  // Ensure activeRoomId exists in current project channels
+  useEffect(() => {
+    if (!projectChannels.some((c) => c.id === activeRoomId)) {
+      setActiveRoomId('general');
+    }
+  }, [projectChannels, activeRoomId]);
+
   // Subscribe to real-time chat updates & targeted notifications
   useEffect(() => {
     const handleIncoming = (incomingMsg) => {
@@ -195,28 +267,21 @@ export default function ChatWidget({
               mName === myRole ||
               mName === 'all' ||
               (myName && mName === myName) ||
-              (myRole === 'admin' && (mId === 'admin' || mName.includes('admin'))) ||
-              (myRole === 'backend' && (mId === 'backend' || mName.includes('backend'))) ||
-              (myRole === 'b2b' && (mId === 'b2b' || mName.includes('b2b'))) ||
-              (myRole === 'driver' && (mId === 'driver' || mName.includes('driver'))) ||
-              (myRole === 'qa' && (mId === 'qa' || mName.includes('qa')))
+              (myRole.includes('lead') && (mId === 'lead' || mName.includes('lead') || mId === 'admin' || mName.includes('admin'))) ||
+              (myRole.includes('admin') && (mId === 'admin' || mName.includes('admin'))) ||
+              (myRole === 'backend' && (mId === 'backend' || mName.includes('backend')))
             );
           });
 
-          // 2. Direct text mention check (Matches @admin, @Admin, @ADMIN, @all, @All, camelCase)
+          // 2. Direct text mention check
           const isMentionedInText =
             /(?:^|\s)@all\b/i.test(rawText) ||
-            new RegExp(`(?:^|\\s)@${myRole}\\b`, 'i').test(rawText) ||
+            (myRole && new RegExp(`(?:^|\\s)@${myRole}\\b`, 'i').test(rawText)) ||
             (myName && new RegExp(`(?:^|\\s)@${myName}\\b`, 'i').test(rawText)) ||
-            (myRole === 'admin' && /(?:^|\s)@admin\b/i.test(rawText)) ||
-            (myRole === 'backend' && /(?:^|\s)@backend\b/i.test(rawText)) ||
-            (myRole === 'b2b' && /(?:^|\s)@b2b\b/i.test(rawText)) ||
-            (myRole === 'driver' && /(?:^|\s)@driver\b/i.test(rawText)) ||
-            (myRole === 'qa' && /(?:^|\s)@qa\b/i.test(rawText));
+            (myRole.includes('lead') && /(?:^|\s)@lead\b/i.test(rawText));
 
           const isDirectRoomMatch =
-            (myRole === 'admin' && incomingMsg.roomId === 'admin-line') ||
-            (myRole === 'backend' && incomingMsg.roomId === 'backend-help');
+            (myRole.includes('lead') && incomingMsg.roomId === 'lead-line');
 
           if (isMentionedInArray || isMentionedInText || isDirectRoomMatch) {
             playNotificationChime();
@@ -246,6 +311,19 @@ export default function ChatWidget({
     setActiveMentionToast(null);
     stopTitleBlink();
   };
+
+  // Close chat drawer on Escape key press
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        setIsOpen(false);
+        setShowRoomDropdown(false);
+        setShowProfileModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen]);
 
   // Scroll to bottom on new message or when opening
   useEffect(() => {
@@ -288,16 +366,16 @@ export default function ChatWidget({
   }, [references, mentionSearch]);
 
   const filteredRoles = useMemo(() => {
-    return TEAM_ROLES.filter((r) =>
+    return projectRoles.filter((r) =>
       r.name.toLowerCase().includes(mentionSearch.toLowerCase()) ||
       (r.displayName && r.displayName.toLowerCase().includes(mentionSearch.toLowerCase())) ||
       r.id.toLowerCase().includes(mentionSearch.toLowerCase())
     );
-  }, [mentionSearch]);
+  }, [projectRoles, mentionSearch]);
 
   const activeChannel = useMemo(() => {
-    return DEFAULT_CHANNELS.find((c) => c.id === activeRoomId) || DEFAULT_CHANNELS[0];
-  }, [activeRoomId]);
+    return projectChannels.find((c) => c.id === activeRoomId) || projectChannels[0];
+  }, [projectChannels, activeRoomId]);
 
   // Handle typing and detecting '@'
   const handleInputChange = (e) => {
@@ -649,19 +727,17 @@ export default function ChatWidget({
           type="button"
           onClick={() => handleOpenChat()}
           className={`collabs-chat-fab-trigger ${unreadCount > 0 ? 'has-unreads' : ''}`}
-          title="Team Q&A & Doubts Chat"
+          title="Open Team Chat"
           aria-label="Open team chat"
         >
           <div className="fab-icon-wrapper">
-            <MessageSquare size={20} />
-            {unreadCount > 0 ? (
+            <MessageSquare size={18} />
+            {unreadCount > 0 && (
               <span className="fab-unread-counter-badge">{unreadCount}</span>
-            ) : (
-              <span className="fab-online-dot" />
             )}
           </div>
           <span className="fab-label">
-            {unreadCount > 0 ? `Doubts (${unreadCount})` : 'Ask Doubts'}
+            {unreadCount > 0 ? `Chat (${unreadCount})` : 'Chat'}
           </span>
         </button>
       )}
@@ -678,16 +754,16 @@ export default function ChatWidget({
                 onClick={() => setShowRoomDropdown(!showRoomDropdown)}
                 title="Switch channel"
               >
-                <Hash size={16} className="room-hash-icon" />
+                <Hash size={15} className="room-hash-icon" />
                 <span className="room-title-text">{activeChannel.name}</span>
-                <ChevronDown size={14} className={`chevron-icon ${showRoomDropdown ? 'rotated' : ''}`} />
+                <ChevronDown size={13} className={`chevron-icon ${showRoomDropdown ? 'rotated' : ''}`} />
               </button>
 
               {/* Room selector dropdown */}
               {showRoomDropdown && (
                 <div className="chat-room-dropdown-menu">
                   <div className="dropdown-section-title">CHANNELS</div>
-                  {DEFAULT_CHANNELS.map((ch) => (
+                  {projectChannels.map((ch) => (
                     <button
                       key={ch.id}
                       type="button"
@@ -714,46 +790,13 @@ export default function ChatWidget({
                 type="button"
                 className="chat-clear-trigger-btn"
                 onClick={() => setShowClearConfirmModal(true)}
-                title="Clear chat messages"
+                title="Clear messages"
                 aria-label="Clear chat messages"
               >
-                <Trash2 size={13} />
+                <Trash2 size={14} />
               </button>
 
-              {/* Test Sound & Alert Button */}
-              <button
-                type="button"
-                className="chat-test-sound-btn"
-                onClick={() => {
-                  playNotificationChime();
-                  setActiveMentionToast({
-                    sender: { name: 'System Test', role: 'admin' },
-                    text: 'Sound & Alert Notification is working properly!',
-                    mentions: [{ id: 'all' }],
-                    roomId: activeRoomId
-                  });
-                }}
-                title="Test notification chime & banner"
-                aria-label="Test notification sound"
-              >
-                <Bell size={13} />
-              </button>
-
-              {/* User Profile Pill */}
-              <button
-                type="button"
-                className="chat-profile-pill-btn"
-                onClick={() => setShowProfileModal(!showProfileModal)}
-                title="Change your identity & role"
-              >
-                <span
-                  className="role-mini-dot"
-                  style={{ backgroundColor: getRoleBadgeStyle(currentUser.role).color }}
-                />
-                <span className="profile-pill-name">{currentUser.name}</span>
-              </button>
-
-              {/* Close Button */}
+              {/* Prominent Close / Dismiss Button */}
               <button
                 type="button"
                 className="chat-close-btn"
@@ -762,10 +805,10 @@ export default function ChatWidget({
                   setShowRoomDropdown(false);
                   setShowProfileModal(false);
                 }}
-                title="Minimize chat"
+                title="Close chat (Esc)"
                 aria-label="Close chat"
               >
-                <X size={16} />
+                <X size={17} />
               </button>
             </div>
           </div>
@@ -878,11 +921,9 @@ export default function ChatWidget({
           <div className="chat-messages-scroll-area">
             {messages.length === 0 ? (
               <div className="chat-empty-state">
-                <Sparkles size={28} className="empty-sparkle-icon" />
-                <p className="empty-title">No messages in #{activeChannel.name} yet</p>
-                <p className="empty-subtitle">
-                  Ask a question to the backend team or admin. Mention @files or @docs to reference pages directly!
-                </p>
+                <Sparkles size={24} className="empty-sparkle-icon" />
+                <p className="empty-title">#{activeChannel.name}</p>
+                <p className="empty-subtitle">Send a message or type @ to mention</p>
               </div>
             ) : (
               messages.map((msg) => {
@@ -1100,12 +1141,20 @@ export default function ChatWidget({
               <div className="staged-chips-list">
                 {stagedMentions.map((stg, i) => (
                   <span key={i} className={`staged-mention-tag tag-${stg.type}`}>
-                    {stg.type === 'doc' ? <FileText size={11} /> : <ImageIcon size={11} />}
+                    {stg.type === 'doc' ? (
+                      <FileText size={11} />
+                    ) : stg.type === 'role' ? (
+                      <span className="staged-chip-at">@</span>
+                    ) : (
+                      <ImageIcon size={11} />
+                    )}
                     <span className="staged-text">{stg.title || stg.name}</span>
                     <button
                       type="button"
                       onClick={() => handleRemoveStagedMention(i)}
-                      className="staged-remove-btn"
+                      className="staged-chip-remove-btn"
+                      title="Remove attachment"
+                      aria-label="Remove attachment"
                     >
                       <X size={10} />
                     </button>
@@ -1196,7 +1245,7 @@ export default function ChatWidget({
                 ref={inputRef}
                 rows={1}
                 className="chat-textarea-input"
-                placeholder={`Ask doubt in #${activeChannel.name}... (type @ or use 🎙️)`}
+                placeholder={`Message #${activeChannel.name}...`}
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={(e) => {

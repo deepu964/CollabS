@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { UploadCloud, Loader2, CheckCircle2, AlertCircle, X, Film, Image as ImageIcon } from 'lucide-react';
 import { uploadMediaToCloudinary, isCloudinaryConfigured } from '../services/cloudinary';
 
-export default function DirectUploadCard({ category, onUploadSuccess, onUploadError }) {
+export default function DirectUploadCard({ category, onUploadSuccess, onUploadError, projectSides = [], projectId = '' }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
   const [isVideo, setIsVideo] = useState(false);
@@ -89,15 +89,29 @@ export default function DirectUploadCard({ category, onUploadSuccess, onUploadEr
       let finalMediaUrl = '';
       let resourceType = isVideo ? 'video' : 'image';
       let publicId = '';
+      const fallbackSide = projectSides[0]?.id || 'general';
+      const effectiveCategory = (!category || category === 'all') ? fallbackSide : category;
 
       if (cloudinaryReady) {
-        const result = await uploadMediaToCloudinary(selectedFile, {
-          category,
-          title: title.trim()
-        });
-        finalMediaUrl = (result.url || '').replace(/^http:\/\//i, 'https://');
-        resourceType = result.resourceType;
-        publicId = result.publicId;
+        try {
+          const result = await uploadMediaToCloudinary(selectedFile, {
+            category: effectiveCategory,
+            title: title.trim(),
+            projectId
+          });
+          finalMediaUrl = (result.url || '').replace(/^http:\/\//i, 'https://');
+          resourceType = result.resourceType || (isVideo ? 'video' : 'image');
+          publicId = result.publicId || '';
+        } catch (cldErr) {
+          console.warn('Cloudinary upload issue, falling back to local storage:', cldErr);
+          setUploadStatus('Saving locally...');
+          finalMediaUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(selectedFile);
+          });
+        }
       } else {
         // Fallback for offline/local base64
         setUploadStatus('Processing locally...');
@@ -110,19 +124,20 @@ export default function DirectUploadCard({ category, onUploadSuccess, onUploadEr
       }
 
       setUploadStatus('Finalizing...');
-      const fallbackTitle = `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
+      const fallbackTitle = `${effectiveCategory.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
       const finalTitle = title.trim() || fallbackTitle;
 
       const newRef = {
         id: publicId ? `cld-${publicId.replace(/[^a-zA-Z0-9_-]/g, '_')}` : `ref-${Date.now()}`,
+        projectId: projectId || undefined,
         publicId: publicId || '',
         title: finalTitle,
-        category,
+        category: effectiveCategory,
         imageUrl: finalMediaUrl.replace(/^http:\/\//i, 'https://'),
         resourceType,
-        deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
+        deviceType: effectiveCategory === 'driver' ? 'Mobile' : 'Desktop',
         createdAt: new Date().toISOString(),
-        isCloudinarySource: cloudinaryReady,
+        isCloudinarySource: Boolean(publicId),
         isLocalUnsynced: true
       };
 
@@ -165,7 +180,9 @@ export default function DirectUploadCard({ category, onUploadSuccess, onUploadEr
           <div className="upload-icon-wrapper">
             <UploadCloud size={28} className="upload-icon-glow" />
           </div>
-          <h3 className="upload-prompt-title">Upload to {category.toUpperCase()}</h3>
+          <h3 className="upload-prompt-title">
+            Upload {(!category || category === 'all') ? 'Media' : `to ${(projectSides.find(s => s.id === category)?.name || category).toUpperCase()}`}
+          </h3>
           <p className="upload-prompt-sub">Drag & drop or click to browse</p>
           <div className="upload-type-chips">
             <span className="type-chip"><ImageIcon size={11} /> Images</span>

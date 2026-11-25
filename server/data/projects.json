@@ -1,0 +1,123 @@
+[
+  {
+    "id": "prj_1795149827728_tx22o9",
+    "name": "E-commerece",
+    "description": "",
+    "leadId": "usr_1795149723159_22n9hn",
+    "leadName": "Deepak",
+    "leadEmail": "deepakbcr22@gmail.com",
+    "passwordHash": null,
+    "hasPassword": false,
+    "color": "#06b6d4",
+    "coverIcon": "Layers",
+    "members": [
+      {
+        "userId": "usr_1795149723159_22n9hn",
+        "name": "Deepak",
+        "email": "deepakbcr22@gmail.com",
+        "role": "Project Lead",
+        "team": "Management",
+        "joinedAt": "2026-11-20T04:43:47.728Z"
+      }
+    ],
+    "teams": [
+      {
+        "id": "team-management",
+        "name": "Management",
+        "description": "Project management & leads"
+      },
+      {
+        "id": "team-frontend",
+        "name": "Frontend",
+        "description": "UI/UX & Client development",
+        "color": "#3b82f6",
+        "updatedAt": "2026-11-25T06:38:45.329Z"
+      },
+      {
+        "id": "team-backend",
+        "name": "Backend",
+        "description": "Server, API & Database",
+        "color": "#3b82f6",
+        "updatedAt": "2026-11-25T06:38:53.085Z"
+      },
+      {
+        "id": "team-qa",
+        "name": "QA",
+        "description": "Quality assurance & testing"
+      }
+    ],
+    "createdAt": "2026-11-20T04:43:47.728Z",
+    "updatedAt": "2026-11-25T06:38:53.089Z"
+  },
+  {
+    "id": "prj_1795588658213_8w9i6f",
+    "name": "TeamBuild",
+    "description": "",
+    "leadId": "usr_1795149723159_22n9hn",
+    "leadName": "Deepak",
+    "leadEmail": "deepakbcr22@gmail.com",
+    "passwordHash": null,
+    "hasPassword": false,
+    "color": "#ec4899",
+    "coverIcon": "Layers",
+    "members": [
+      {
+        "userId": "usr_1795149723159_22n9hn",
+        "name": "Deepak",
+        "email": "deepakbcr22@gmail.com",
+        "role": "Project Lead",
+        "team": "General",
+        "joinedAt": "2026-11-25T06:37:38.214Z"
+      }
+    ],
+    "teams": [
+      {
+        "id": "side-general",
+        "name": "General",
+        "description": "General project resources",
+        "color": "#3b82f6"
+      }
+    ],
+    "createdAt": "2026-11-25T06:37:38.214Z",
+    "updatedAt": "2026-11-25T06:37:38.214Z"
+  },
+  {
+    "id": "prj_1795591821742_rbd2xk",
+    "name": "E-commerece",
+    "description": "",
+    "leadId": "usr_1795591794178_z7mkop",
+    "leadName": "Deepak",
+    "leadEmail": "deepakbcr@gmail.com",
+    "passwordHash": null,
+    "hasPassword": false,
+    "color": "#f59e0b",
+    "coverIcon": "Layers",
+    "members": [
+      {
+        "userId": "usr_1795591794178_z7mkop",
+        "name": "Deepak",
+        "email": "deepakbcr@gmail.com",
+        "role": "Project Lead",
+        "team": "Backend",
+        "joinedAt": "2026-11-25T07:30:21.742Z"
+      }
+    ],
+    "teams": [
+      {
+        "id": "side-general",
+        "name": "General",
+        "description": "General project resources",
+        "color": "#3b82f6"
+      },
+      {
+        "id": "team_1795591854308_5gu3",
+        "name": "Backend",
+        "description": "",
+        "color": "#3b82f6",
+        "createdAt": "2026-11-25T07:30:54.309Z"
+      }
+    ],
+    "createdAt": "2026-11-25T07:30:21.742Z",
+    "updatedAt": "2026-11-25T07:31:02.257Z"
+  }
+]

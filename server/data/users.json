@@ -1,0 +1,20 @@
+[
+  {
+    "id": "usr_1795149723159_22n9hn",
+    "name": "Deepak",
+    "email": "deepakbcr22@gmail.com",
+    "password": "$2b$10$lDnKzxOSivnQ0y0OmrlEe.wdV9j3dhxbMwYbj9rGqbKhuUm1E0ZKu",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Deepak&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-20T04:42:03.160Z",
+    "updatedAt": "2026-11-20T04:42:03.160Z"
+  },
+  {
+    "id": "usr_1795591794178_z7mkop",
+    "name": "Deepak",
+    "email": "deepakbcr@gmail.com",
+    "password": "$2b$10$/2J8FQGTV9hfQEHMHmjhtepl/NL7UPQ2ukPT3am0JXjEVMZ6CG2ZW",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Deepak&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-25T07:29:54.178Z",
+    "updatedAt": "2026-11-25T07:29:54.178Z"
+  }
+]

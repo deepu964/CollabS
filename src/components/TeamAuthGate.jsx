@@ -73,7 +73,6 @@ export default function TeamAuthGate({ onAuthenticated }) {
         {/* Brand Header */}
         <div className="auth-gate-header">
           <div className="auth-brand-pill">
-            <span className="brand-dot" />
             <span className="auth-brand-text">CollabS Security Gate</span>
           </div>
           <h1 className="auth-gate-title">

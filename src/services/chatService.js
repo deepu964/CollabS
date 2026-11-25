@@ -1,69 +1,39 @@
 /**
- * Chat Service for CollabS
- * Manages rooms (#general, #backend-help, #docs-feedback, #admin-line),
- * user profile, message persistence, real-time multi-tab broadcasting,
- * instant multi-device WebSockets (HiveMQ MQTT over WSS),
- * and global cross-device cloud archive via Cloudinary CDN Tag List.
+ * Chat Service for CollabS (Phase 6 - Multi-Project Communication Hub)
+ * Manages project-scoped channels (#general, team-specific sides, #docs-feedback, #lead-line),
+ * authenticated user profile & project role, persistent backend database storage,
+ * real-time multi-tab broadcasting (BroadcastChannel),
+ * instant multi-device WebSockets scoped by project (HiveMQ MQTT over WSS),
+ * and secondary cross-device cloud archive via Cloudinary CDN Tag List.
  */
 
 import Paho from 'paho-mqtt';
 
-const STORAGE_KEY_MESSAGES = 'collabs_chat_messages_v1';
-const STORAGE_KEY_USER = 'collabs_chat_user_v1';
-const STORAGE_KEY_DELETED = 'collabs_chat_deleted_ids_v1';
-const STORAGE_KEY_CLEARED_ROOMS = 'collabs_chat_cleared_rooms_v1';
-const BROADCAST_CHANNEL_NAME = 'collabs_chat_bus_v1';
-
-// Global Cloud Sync Settings (Cloudinary Unsigned Tag Listing)
+// Cloud Sync Settings (Cloudinary Unsigned Tag Listing)
 const CLOUD_NAME = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME) || 'dtaz4vhxh';
 const UPLOAD_PRESET = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET) || 'CollabS';
-const CHAT_TAG = 'collabs_chat';
 const CHAT_FOLDER = 'collabs/chat';
-const CHAT_LIST_URL = `https://res.cloudinary.com/${CLOUD_NAME}/raw/list/${CHAT_TAG}.json`;
 const CHAT_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/raw/upload`;
 
 // Live Multi-Device Real-Time WebSocket Broker (Public WSS - Zero Config, Sub-100ms delivery)
 const MQTT_BROKER = 'broker.hivemq.com';
 const MQTT_PORT = 8884;
 const MQTT_PATH = '/mqtt';
-const MQTT_TOPIC = 'collabs/v1/team_messages';
 
-// Default team channels
+// Default team channels fallback
 export const DEFAULT_CHANNELS = [
-  { id: 'general', name: 'general', description: 'General team discussion & questions', type: 'channel' },
-  { id: 'backend-help', name: 'backend-help', description: 'Ask doubts to Backend & API team', type: 'channel' },
+  { id: 'general', name: 'general', description: 'General project discussion & questions', type: 'channel' },
   { id: 'docs-feedback', name: 'docs-feedback', description: 'PRD, Docs & Architecture review', type: 'channel' },
-  { id: 'admin-line', name: 'admin-line', description: 'Operations & Admin queries', type: 'channel' }
+  { id: 'lead-line', name: 'lead-line', description: 'Project Lead notices & questions', type: 'channel' }
 ];
 
-// Team roles for tagging & identification (The 5 Authorized Pillars + @all broadcast)
+// Base team roles for tagging & identification
 export const TEAM_ROLES = [
   { id: 'all', name: 'all', displayName: 'All Members', badgeColor: '#f97316', isBroadcast: true },
-  { id: 'admin', name: 'Admin', displayName: 'Admin / Lead', badgeColor: '#f59e0b' },
-  { id: 'backend', name: 'Backend', displayName: 'Backend Engineer', badgeColor: '#10b981' },
-  { id: 'b2b', name: 'B2B Client', displayName: 'B2B Wholesale Client', badgeColor: '#3b82f6' },
-  { id: 'driver', name: 'Driver', displayName: 'Driver & Logistics', badgeColor: '#ec4899' },
-  { id: 'qa', name: 'QA', displayName: 'QA & Testing Lead', badgeColor: '#8b5cf6' }
-];
-
-// Initial starter welcome messages
-const INITIAL_MESSAGES = [
-  {
-    id: 'msg-seed-1',
-    roomId: 'backend-help',
-    sender: { name: 'Admin', role: 'admin' },
-    text: 'Welcome to CollabS Team Chat! 👋 You can ask any backend or admin doubts here.',
-    mentions: [],
-    timestamp: new Date(Date.now() - 3600000 * 2).toISOString()
-  },
-  {
-    id: 'msg-seed-2',
-    roomId: 'backend-help',
-    sender: { name: 'Backend Lead', role: 'backend' },
-    text: 'Feel free to type @ to mention any Doc or Image reference when asking questions.',
-    mentions: [],
-    timestamp: new Date(Date.now() - 3600000).toISOString()
-  }
+  { id: 'lead', name: 'Lead', displayName: 'Project Lead', badgeColor: '#f59e0b' },
+  { id: 'frontend', name: 'Frontend', displayName: 'Frontend Team', badgeColor: '#3b82f6' },
+  { id: 'backend', name: 'Backend', displayName: 'Backend Team', badgeColor: '#10b981' },
+  { id: 'qa', name: 'QA', displayName: 'QA & Testing Team', badgeColor: '#8b5cf6' }
 ];
 
 class ChatService {
@@ -75,40 +45,117 @@ class ChatService {
     this.mqttClient = null;
     this.isMqttConnected = false;
     this.mqttReconnectTimer = null;
+    this.currentProject = null;
+    this.activeSubscribedTopic = null;
 
     // 1. Same-device multi-tab synchronization via BroadcastChannel
-    if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
-      try {
-        this.broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
-        this.broadcastChannel.onmessage = (event) => {
-          if (event.data?.type === 'NEW_MESSAGE') {
-            this.handleLocalBroadcast(event.data.message);
-          }
-        };
-      } catch (err) {
-        console.warn('[ChatService] BroadcastChannel unavailable', err);
-      }
-    }
+    this.initBroadcastChannel();
 
     // 2. Instant multi-device synchronization via HiveMQ WebSockets (<100ms latency)
     if (typeof window !== 'undefined') {
       this.initMqtt();
     }
 
-    // 3. Cloudinary background sync (backfills history from cloud)
+    // 3. Periodic cloud / backend check
     if (typeof window !== 'undefined') {
-      this.fetchRemoteMessages();
       this.pollInterval = setInterval(() => {
-        this.fetchRemoteMessages();
-      }, 5000);
+        if (this.currentProject?.id) {
+          this.fetchProjectMessages(this.currentProject.id);
+        }
+      }, 10000);
 
       window.addEventListener('focus', () => {
-        this.fetchRemoteMessages();
+        if (this.currentProject?.id) {
+          this.fetchProjectMessages(this.currentProject.id);
+        }
         if (!this.isMqttConnected) {
           this.connectMqtt();
         }
       });
     }
+  }
+
+  getProjectId() {
+    return this.currentProject?.id || 'default';
+  }
+
+  getStorageKeyMessages() {
+    return `collabs_chat_messages_v2_${this.getProjectId()}`;
+  }
+
+  getStorageKeyDeleted() {
+    return `collabs_chat_deleted_ids_v2_${this.getProjectId()}`;
+  }
+
+  getStorageKeyClearedRooms() {
+    return `collabs_chat_cleared_rooms_v2_${this.getProjectId()}`;
+  }
+
+  getMqttTopic() {
+    return `collabs/v2/projects/${this.getProjectId()}/chat`;
+  }
+
+  getBroadcastChannelName() {
+    return `collabs_chat_bus_v2_${this.getProjectId()}`;
+  }
+
+  getCloudinaryTag() {
+    return `collabs_chat_${this.getProjectId()}`;
+  }
+
+  initBroadcastChannel() {
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+
+    try {
+      if (this.broadcastChannel) {
+        this.broadcastChannel.close();
+      }
+      this.broadcastChannel = new BroadcastChannel(this.getBroadcastChannelName());
+      this.broadcastChannel.onmessage = (event) => {
+        if (event.data?.type === 'NEW_MESSAGE') {
+          this.handleLocalBroadcast(event.data.message);
+        }
+      };
+    } catch (err) {
+      console.warn('[ChatService] BroadcastChannel unavailable', err);
+    }
+  }
+
+  // Switch the active project and re-scope all communication channels
+  setProject(project) {
+    if (!project) return;
+    const prevId = this.currentProject?.id;
+    this.currentProject = project;
+
+    if (prevId === project.id) return;
+
+    console.log(`[ChatService] Switching chat scope to project: "${project.name}" (${project.id})`);
+
+    // 1. Re-initialize BroadcastChannel for the new project
+    this.initBroadcastChannel();
+
+    // 2. Re-subscribe MQTT topic to the new project
+    if (this.mqttClient && this.isMqttConnected) {
+      if (this.activeSubscribedTopic) {
+        try {
+          this.mqttClient.unsubscribe(this.activeSubscribedTopic);
+        } catch {}
+      }
+      const newTopic = this.getMqttTopic();
+      try {
+        this.mqttClient.subscribe(newTopic, { qos: 1 });
+        this.activeSubscribedTopic = newTopic;
+        console.log(`[ChatService] Subscribed to project MQTT topic: ${newTopic}`);
+      } catch (subErr) {
+        console.warn('[ChatService] Subscribe failed:', subErr);
+      }
+    }
+
+    // 3. Fetch backend messages for this project
+    this.fetchProjectMessages(project.id);
+
+    // 4. Notify UI listeners so rooms and messages update immediately
+    this.notifyListeners();
   }
 
   // Initialize MQTT over secure WebSockets
@@ -126,6 +173,7 @@ class ChatService {
 
       this.mqttClient.onConnectionLost = (responseObject) => {
         this.isMqttConnected = false;
+        this.activeSubscribedTopic = null;
         if (responseObject.errorCode !== 0) {
           console.debug('[ChatService] Live WS connection lost:', responseObject.errorMessage);
           this.scheduleMqttReconnect();
@@ -154,15 +202,18 @@ class ChatService {
         cleanSession: true,
         onSuccess: () => {
           this.isMqttConnected = true;
-          console.log('[ChatService] Live WebSocket connected to HiveMQ global channel');
+          const topic = this.getMqttTopic();
+          console.log('[ChatService] Live WebSocket connected to HiveMQ topic:', topic);
           try {
-            this.mqttClient.subscribe(MQTT_TOPIC, { qos: 1 });
+            this.mqttClient.subscribe(topic, { qos: 1 });
+            this.activeSubscribedTopic = topic;
           } catch (subErr) {
             console.warn('[ChatService] Subscribe failed:', subErr);
           }
         },
         onFailure: (err) => {
           this.isMqttConnected = false;
+          this.activeSubscribedTopic = null;
           console.debug('[ChatService] Live WS connect attempt failed:', err?.errorMessage || err);
           this.scheduleMqttReconnect();
         }
@@ -187,17 +238,23 @@ class ChatService {
       const msg = JSON.parse(payloadString);
       if (!msg || !msg.id) return;
 
+      // Project scope validation: discard if not for current project
+      if (msg.projectId && msg.projectId !== this.getProjectId()) {
+        return;
+      }
+
       // Handle remote chat clear events
       if (msg.type === 'system_chat_clear') {
+        const key = this.getStorageKeyMessages();
         if (msg.roomId === 'all') {
           try {
-            localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+            localStorage.setItem(key, JSON.stringify([]));
           } catch {}
         } else if (msg.roomId) {
           const current = this.getAllMessages();
           const filtered = current.filter((m) => m.roomId !== msg.roomId);
           try {
-            localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(filtered));
+            localStorage.setItem(key, JSON.stringify(filtered));
           } catch {}
         }
         this.notifyListeners();
@@ -205,7 +262,14 @@ class ChatService {
       }
 
       const current = this.getAllMessages();
-      const existing = current.find((m) => m.id === msg.id);
+      const existing = current.find((m) =>
+        m.id === msg.id || (
+          m.roomId === msg.roomId &&
+          m.sender?.id === msg.sender?.id &&
+          m.text === msg.text &&
+          Math.abs(new Date(m.timestamp || 0) - new Date(msg.timestamp || 0)) < 5000
+        )
+      );
       if (existing) return; // Deduplicate
 
       const updated = [...current, msg].sort(
@@ -214,7 +278,7 @@ class ChatService {
 
       const trimmed = updated.slice(-400);
       try {
-        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(trimmed));
+        localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(trimmed));
       } catch (e) {
         console.warn('Failed to cache incoming MQTT message', e);
       }
@@ -230,17 +294,21 @@ class ChatService {
   handleLocalBroadcast(msg) {
     if (!msg || !msg.id) return;
 
-    // Handle local chat clear events across tabs
+    if (msg.projectId && msg.projectId !== this.getProjectId()) {
+      return;
+    }
+
     if (msg.type === 'system_chat_clear') {
+      const key = this.getStorageKeyMessages();
       if (msg.roomId === 'all') {
         try {
-          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+          localStorage.setItem(key, JSON.stringify([]));
         } catch {}
       } else if (msg.roomId) {
         const current = this.getAllMessages();
         const filtered = current.filter((m) => m.roomId !== msg.roomId);
         try {
-          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(filtered));
+          localStorage.setItem(key, JSON.stringify(filtered));
         } catch {}
       }
       this.notifyListeners();
@@ -248,19 +316,26 @@ class ChatService {
     }
 
     const current = this.getAllMessages();
-    if (!current.some((m) => m.id === msg.id)) {
+    const isDuplicate = current.some((m) =>
+      m.id === msg.id || (
+        m.roomId === msg.roomId &&
+        m.sender?.id === msg.sender?.id &&
+        m.text === msg.text &&
+        Math.abs(new Date(m.timestamp || 0) - new Date(msg.timestamp || 0)) < 5000
+      )
+    );
+    if (!isDuplicate) {
       const updated = [...current, msg];
       try {
-        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated.slice(-400)));
+        localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(updated.slice(-400)));
       } catch {}
     }
     this.notifyListeners(msg);
   }
 
-  // Publish message to MQTT broker
+  // Publish message to MQTT broker scoped by project
   publishMqttMessage(message) {
     if (!this.mqttClient || !this.isMqttConnected) {
-      // Reconnect if needed
       this.connectMqtt();
       return;
     }
@@ -272,7 +347,7 @@ class ChatService {
 
       const payload = JSON.stringify(message);
       const mqttMsg = new PahoMessage(payload);
-      mqttMsg.destinationName = MQTT_TOPIC;
+      mqttMsg.destinationName = this.getMqttTopic();
       mqttMsg.qos = 1;
       this.mqttClient.send(mqttMsg);
     } catch (err) {
@@ -298,103 +373,60 @@ class ChatService {
     });
   }
 
-  // Fetch messages from global Cloudinary CDN tag list (backfill for missed history)
-  async fetchRemoteMessages() {
-    if (this.isSyncing) return;
-    this.isSyncing = true;
+  // Fetch messages from backend for the specified project
+  async fetchProjectMessages(projectId = null) {
+    const targetId = projectId || this.getProjectId();
+    if (!targetId || targetId === 'default') return;
 
     try {
-      const cacheBuster = Date.now();
-      const res = await fetch(`${CHAT_LIST_URL}?t=${cacheBuster}`, {
-        method: 'GET',
+      const token = localStorage.getItem('collabs_auth_token_v2');
+      if (!token) return;
+
+      const res = await fetch(`/api/projects/${targetId}/chat`, {
         headers: {
-          'Accept': 'application/json'
+          'Authorization': `Bearer ${token}`
         }
       });
 
-      if (!res.ok) {
-        this.isSyncing = false;
-        return;
-      }
+      if (!res.ok) return;
 
       const data = await res.json();
-      const resources = Array.isArray(data?.resources) ? data.resources : [];
+      if (data.success && Array.isArray(data.messages)) {
+        const local = this.getAllMessages();
+        const localIds = new Set(local.map((m) => m.id));
+        const merged = [...local];
+        let hasNew = false;
 
-      if (resources.length === 0) {
-        this.isSyncing = false;
-        return;
-      }
-
-      const localMessages = this.getAllMessages();
-      const localIds = new Set(localMessages.map((m) => m.id));
-      const localCloudIds = new Set(localMessages.map((m) => m.cloudPublicId).filter(Boolean));
-      const deletedSet = this.getDeletedIds();
-      const clearedRooms = this.getClearedRooms();
-      const allClearedAt = clearedRooms['all'] || 0;
-
-      // Find resources we haven't fetched into our local cache and haven't deleted
-      const missingResources = resources.filter(
-        (r) => r.public_id && !localCloudIds.has(r.public_id) && !deletedSet.has(r.public_id)
-      );
-
-      if (missingResources.length === 0) {
-        this.isSyncing = false;
-        return;
-      }
-
-      // Fetch the content of newly detected cloud messages (limit to 15 recent)
-      const fetchedNew = [];
-      for (const r of missingResources.slice(0, 15)) {
-        try {
-          const fileUrl = `https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/v${r.version}/${r.public_id}`;
-          const msgRes = await fetch(fileUrl, { cache: 'no-store' });
-          if (msgRes.ok) {
-            const msgJson = await msgRes.json();
-            if (msgJson && msgJson.id) {
-              if (deletedSet.has(msgJson.id)) continue;
-              const roomClearedAt = clearedRooms[msgJson.roomId] || 0;
-              const msgTime = new Date(msgJson.timestamp || 0).getTime();
-              if (msgTime <= allClearedAt || msgTime <= roomClearedAt) {
-                deletedSet.add(msgJson.id);
-                continue;
-              }
-
-              if (!localIds.has(msgJson.id)) {
-                msgJson.cloudPublicId = r.public_id;
-                fetchedNew.push(msgJson);
-                localIds.add(msgJson.id);
-              }
-            }
+        data.messages.forEach((msg) => {
+          const isDuplicate = localIds.has(msg.id) || merged.some((m) =>
+            m.id === msg.id || (
+              m.roomId === msg.roomId &&
+              m.sender?.id === msg.sender?.id &&
+              m.text === msg.text &&
+              Math.abs(new Date(m.timestamp || 0) - new Date(msg.timestamp || 0)) < 5000
+            )
+          );
+          if (!isDuplicate) {
+            merged.push(msg);
+            localIds.add(msg.id);
+            hasNew = true;
           }
-        } catch (fetchErr) {
-          console.debug('[ChatService] single message fetch skipped', fetchErr);
+        });
+
+        if (hasNew) {
+          merged.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+          try {
+            localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(merged.slice(-400)));
+          } catch {}
+          this.notifyListeners();
         }
-      }
-
-      if (fetchedNew.length > 0) {
-        const merged = [...localMessages, ...fetchedNew].sort(
-          (a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
-        );
-
-        const trimmed = merged.slice(-400);
-
-        try {
-          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(trimmed));
-        } catch (e) {
-          console.warn('Failed to cache remote messages', e);
-        }
-
-        // Notify UI silently for backfilled messages (DO NOT trigger alert toasts or sound chimes for old history)
-        this.notifyListeners();
       }
     } catch (err) {
-      // Offline or network error
-    } finally {
-      this.isSyncing = false;
+      console.debug('[ChatService] Backend fetch error:', err);
     }
   }
 
-  // Push an individual message asset to Cloudinary CDN tag list for persistent cloud archive
+  // Push an individual message asset to Cloudinary CDN tag list as secondary backup
   async pushMessageToCloud(message) {
     try {
       const payload = JSON.stringify(message);
@@ -403,10 +435,9 @@ class ChatService {
       const formData = new FormData();
       formData.append('file', blob, 'msg.json');
       formData.append('upload_preset', UPLOAD_PRESET);
-      formData.append('tags', CHAT_TAG);
-      formData.append('folder', CHAT_FOLDER);
+      formData.append('tags', this.getCloudinaryTag());
+      formData.append('folder', `${CHAT_FOLDER}/${this.getProjectId()}`);
 
-      // Context metadata for instant listing inspection
       const cleanText = (message.text || '').replace(/[|;=]/g, ' ').slice(0, 120);
       const cleanSender = (message.sender?.name || '').replace(/[|;=]/g, ' ').slice(0, 40);
       formData.append('context', `caption=${cleanText}|sender=${cleanSender}|role=${message.sender?.role || ''}`);
@@ -422,20 +453,43 @@ class ChatService {
         const current = this.getAllMessages();
         const updated = current.map((m) => (m.id === message.id ? { ...m, cloudPublicId: data.public_id } : m));
         try {
-          localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated));
-        } catch {
-          // ignore
-        }
+          localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(updated));
+        } catch {}
       }
     } catch (err) {
-      console.warn('[ChatService] Network error pushing message to cloud:', err);
+      console.debug('[ChatService] Cloudinary push skipped/offline:', err);
     }
   }
 
   // User Profile
   getCurrentUser() {
     try {
-      // Prioritize authenticated team member
+      // 1. Prioritize authenticated user from Phase 1
+      const userRaw = localStorage.getItem('collabs_auth_user_v2');
+      if (userRaw) {
+        const u = JSON.parse(userRaw);
+        if (u && u.id) {
+          let role = 'Member';
+          if (this.currentProject) {
+            if (this.currentProject.leadId === u.id) {
+              role = 'Project Lead';
+            } else if (Array.isArray(this.currentProject.members)) {
+              const mem = this.currentProject.members.find(
+                (m) => m.userId === u.id || (m.email && m.email.toLowerCase() === u.email?.toLowerCase())
+              );
+              if (mem && mem.team) role = mem.team;
+            }
+          }
+          return {
+            id: u.id,
+            name: u.name || 'Team Member',
+            email: u.email,
+            role
+          };
+        }
+      }
+
+      // 2. Legacy fallback
       const authRaw = localStorage.getItem('collabs_authenticated_member_v2');
       if (authRaw) {
         const parsedAuth = JSON.parse(authRaw);
@@ -447,34 +501,47 @@ class ChatService {
           };
         }
       }
-
-      const saved = localStorage.getItem(STORAGE_KEY_USER);
-      if (saved) return JSON.parse(saved);
     } catch {
       // fallback
     }
-    const defaultUser = {
+
+    return {
       id: 'usr_' + Math.random().toString(36).substring(2, 9),
       name: 'Team Member',
-      role: 'b2b'
+      role: 'Member'
     };
-    this.setCurrentUser(defaultUser);
-    return defaultUser;
   }
 
-  setCurrentUser(user) {
-    try {
-      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    } catch (e) {
-      console.warn('Failed to save user profile', e);
+  getInitialMessages() {
+    if (!this.currentProject) {
+      return [
+        {
+          id: 'msg-seed-general',
+          roomId: 'general',
+          sender: { name: 'CollabS Hub', role: 'System' },
+          text: 'Welcome to CollabS Team Chat! 👋 Ask any project questions or tag your teammates here.',
+          mentions: [],
+          timestamp: new Date().toISOString()
+        }
+      ];
     }
-    this.notifyListeners();
+    return [
+      {
+        id: `msg-seed-${this.getProjectId()}`,
+        projectId: this.getProjectId(),
+        roomId: 'general',
+        sender: { name: 'CollabS Hub', role: 'System' },
+        text: `Welcome to ${this.currentProject.name} Chat! 💬 Collaborate with your Project Lead and custom teams here.`,
+        mentions: [],
+        timestamp: new Date().toISOString()
+      }
+    ];
   }
 
-  // Get all messages
+  // Get all messages for active project
   getAllMessages() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_MESSAGES);
+      const raw = localStorage.getItem(this.getStorageKeyMessages());
       if (raw !== null) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
@@ -484,13 +551,13 @@ class ChatService {
     } catch (e) {
       console.error('Failed to parse chat messages', e);
     }
-    return INITIAL_MESSAGES;
+    return this.getInitialMessages();
   }
 
   // Get deleted message IDs
   getDeletedIds() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_DELETED);
+      const raw = localStorage.getItem(this.getStorageKeyDeleted());
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) return new Set(parsed);
@@ -505,7 +572,7 @@ class ChatService {
       ids.forEach((id) => {
         if (id) current.add(id);
       });
-      localStorage.setItem(STORAGE_KEY_DELETED, JSON.stringify([...current]));
+      localStorage.setItem(this.getStorageKeyDeleted(), JSON.stringify([...current]));
     } catch (e) {
       console.warn('Failed to record deleted chat message IDs', e);
     }
@@ -513,7 +580,7 @@ class ChatService {
 
   getClearedRooms() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_CLEARED_ROOMS);
+      const raw = localStorage.getItem(this.getStorageKeyClearedRooms());
       if (raw) return JSON.parse(raw);
     } catch {}
     return {};
@@ -523,7 +590,7 @@ class ChatService {
     try {
       const current = this.getClearedRooms();
       current[roomId] = Date.now();
-      localStorage.setItem(STORAGE_KEY_CLEARED_ROOMS, JSON.stringify(current));
+      localStorage.setItem(this.getStorageKeyClearedRooms(), JSON.stringify(current));
     } catch {}
   }
 
@@ -539,10 +606,23 @@ class ChatService {
 
     const updated = current.filter((m) => m.roomId !== roomId);
     try {
-      localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated));
+      localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(updated));
     } catch (e) {
       console.warn('Failed to clear room messages', e);
     }
+
+    // Call backend API
+    try {
+      const token = localStorage.getItem('collabs_auth_token_v2');
+      const projectId = this.getProjectId();
+      if (token && projectId && projectId !== 'default') {
+        fetch(`/api/projects/${projectId}/chat?roomId=${encodeURIComponent(roomId)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
     this.notifyListeners();
     this.broadcastClearEvent(roomId);
   }
@@ -554,13 +634,25 @@ class ChatService {
     const deletedCloudIds = current.map((m) => m.cloudPublicId).filter(Boolean);
     this.recordDeleted([...deletedIds, ...deletedCloudIds]);
     this.recordClearedRoom('all');
-    DEFAULT_CHANNELS.forEach((ch) => this.recordClearedRoom(ch.id));
 
     try {
-      localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify([]));
+      localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify([]));
     } catch (e) {
       console.warn('Failed to clear all messages', e);
     }
+
+    // Call backend API
+    try {
+      const token = localStorage.getItem('collabs_auth_token_v2');
+      const projectId = this.getProjectId();
+      if (token && projectId && projectId !== 'default') {
+        fetch(`/api/projects/${projectId}/chat`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
     this.notifyListeners();
     this.broadcastClearEvent('all');
   }
@@ -570,6 +662,7 @@ class ChatService {
     const packet = {
       id: 'clear_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
       type: 'system_chat_clear',
+      projectId: this.getProjectId(),
       roomId,
       timestamp: new Date().toISOString()
     };
@@ -588,8 +681,8 @@ class ChatService {
     const fileName = `voice_${Date.now()}.${ext}`;
     formData.append('file', audioBlob, fileName);
     formData.append('upload_preset', UPLOAD_PRESET);
-    formData.append('folder', 'collabs/voice');
-    formData.append('tags', 'collabs,voice,chat');
+    formData.append('folder', `${CHAT_FOLDER}/${this.getProjectId()}/voice`);
+    formData.append('tags', `collabs,voice,chat,${this.getProjectId()}`);
 
     const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`;
     const res = await fetch(uploadUrl, {
@@ -616,13 +709,15 @@ class ChatService {
     if (!text && mentions.length === 0 && !audioUrl) return null;
 
     const user = this.getCurrentUser();
+    const projectId = this.getProjectId();
     const newMessage = {
       id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      projectId,
       roomId: roomId || 'general',
       sender: {
         id: user.id,
         name: user.name || 'Team Member',
-        role: user.role || 'b2b'
+        role: user.role || 'Member'
       },
       text: (text || '').trim(),
       type: type || (audioUrl ? 'voice' : 'text'),
@@ -636,7 +731,7 @@ class ChatService {
     const updated = [...current, newMessage];
 
     try {
-      localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(updated));
+      localStorage.setItem(this.getStorageKeyMessages(), JSON.stringify(updated));
     } catch (e) {
       console.error('Failed to save message', e);
     }
@@ -655,14 +750,37 @@ class ChatService {
     // 3. Publish to live WebSockets (<100ms instant delivery to other laptops/phones)
     this.publishMqttMessage(newMessage);
 
-    // 4. Archive to Cloudinary tag listing in background (for permanent cloud history)
+    // 4. Persist to Backend Express database
+    try {
+      const token = localStorage.getItem('collabs_auth_token_v2');
+      if (token && projectId && projectId !== 'default') {
+        fetch(`/api/projects/${projectId}/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            id: newMessage.id,
+            timestamp: newMessage.timestamp,
+            roomId: newMessage.roomId,
+            text: newMessage.text,
+            mentions: newMessage.mentions,
+            type: newMessage.type,
+            audioUrl: newMessage.audioUrl,
+            duration: newMessage.duration
+          })
+        }).catch((e) => console.debug('[ChatService] Backend chat post error:', e));
+      }
+    } catch (e) {}
+
+    // 5. Push to secondary Cloudinary cloud archive
     this.pushMessageToCloud(newMessage);
 
     return newMessage;
   }
 
-  // Get unread counts
-  getUnreadCount(currentRoomId = null) {
+  getUnreadCount() {
     return 0;
   }
 }

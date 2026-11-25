@@ -19,22 +19,32 @@ export const getCloudinaryCloudName = () => CLOUD_NAME;
  * @param {Object} options - Optional { category, title }
  * @returns {Promise<{ url: string, publicId: string, resourceType: string, width: number, height: number, format: string }>}
  */
-export async function uploadMediaToCloudinary(file, { category = 'b2b', title = '' } = {}) {
+export async function uploadMediaToCloudinary(file, { category = 'general', title = '', projectId = '' } = {}) {
   if (!isCloudinaryConfigured()) {
     throw new Error(
       'Cloudinary is not configured. Please check VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET in your .env file.'
     );
   }
 
+  const folderPath = projectId ? `collabs/${projectId}/${category}` : `collabs/${category}`;
+  const tags = projectId ? `collabs,${projectId},${category}` : `collabs,${category}`;
+
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', UPLOAD_PRESET);
-  formData.append('folder', `collabs/${category}`);
-  formData.append('tags', `collabs,${category}`);
+  formData.append('folder', folderPath);
+  formData.append('tags', tags);
 
-  if (title) {
-    const cleanTitle = title.replace(/[|;=]/g, ' ').trim();
-    formData.append('context', `caption=${cleanTitle}|title=${cleanTitle}`);
+  if (title || projectId) {
+    const cleanTitle = (title || '').replace(/[|;=]/g, ' ').trim();
+    const parts = [];
+    if (cleanTitle) {
+      parts.push(`caption=${cleanTitle}`, `title=${cleanTitle}`);
+    }
+    if (projectId) {
+      parts.push(`projectId=${projectId}`);
+    }
+    formData.append('context', parts.join('|'));
   }
 
   // Use auto/upload to accept both images and videos
@@ -75,22 +85,32 @@ export const uploadImageToCloudinary = uploadMediaToCloudinary;
  * @param {Object} options - Optional { title }
  * @returns {Promise<{ url: string, publicId: string, resourceType: string, format: string, bytes: number, createdAt: string }>}
  */
-export async function uploadDocToCloudinary(file, { title = '' } = {}) {
+export async function uploadDocToCloudinary(file, { title = '', projectId = '' } = {}) {
   if (!isCloudinaryConfigured()) {
     throw new Error(
       'Cloudinary is not configured. Please check VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET in your .env file.'
     );
   }
 
+  const folderPath = projectId ? `collabs/${projectId}/docs` : 'collabs/docs';
+  const tags = projectId ? `collabs,${projectId},docs` : 'collabs,docs';
+
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', UPLOAD_PRESET);
-  formData.append('folder', 'collabs/docs');
-  formData.append('tags', 'collabs,docs');
+  formData.append('folder', folderPath);
+  formData.append('tags', tags);
 
-  if (title) {
-    const cleanTitle = title.replace(/[|;=]/g, ' ').trim();
-    formData.append('context', `caption=${cleanTitle}|title=${cleanTitle}`);
+  if (title || projectId) {
+    const cleanTitle = (title || '').replace(/[|;=]/g, ' ').trim();
+    const parts = [];
+    if (cleanTitle) {
+      parts.push(`caption=${cleanTitle}`, `title=${cleanTitle}`);
+    }
+    if (projectId) {
+      parts.push(`projectId=${projectId}`);
+    }
+    formData.append('context', parts.join('|'));
   }
 
   const ext = (file.name || '').split('.').pop()?.toLowerCase() || '';

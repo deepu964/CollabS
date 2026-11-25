@@ -38,10 +38,13 @@ export default function UploadModal({
   onClose,
   onAddReference,
   onError,
-  defaultCategory = 'b2b'
+  defaultCategory = 'all',
+  projectSides = [],
+  projectId = ''
 }) {
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState(defaultCategory);
+  const fallbackSideId = projectSides[0]?.id || 'general';
+  const [category, setCategory] = useState(() => (defaultCategory === 'all' || !defaultCategory ? fallbackSideId : defaultCategory));
   const [imageUrl, setImageUrl] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -55,8 +58,12 @@ export default function UploadModal({
   const cloudinaryReady = isCloudinaryConfigured();
 
   useEffect(() => {
-    setCategory(defaultCategory === 'all' ? 'b2b' : defaultCategory);
-  }, [defaultCategory, isOpen]);
+    if (!defaultCategory || defaultCategory === 'all') {
+      setCategory(projectSides[0]?.id || 'general');
+    } else {
+      setCategory(defaultCategory);
+    }
+  }, [defaultCategory, isOpen, projectSides]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -78,8 +85,13 @@ export default function UploadModal({
   if (!isOpen) return null;
 
   const handleFileUpload = (file) => {
-    if (!file || !file.type.startsWith('image/')) {
-      setError('Please upload a valid image file');
+    if (!file) return;
+
+    const fileIsVideo = file.type.startsWith('video/');
+    const fileIsImage = file.type.startsWith('image/');
+
+    if (!fileIsVideo && !fileIsImage) {
+      setError('Please upload a valid image or video file (PNG, JPG, WebP, MP4, WebM)');
       return;
     }
 
@@ -131,19 +143,36 @@ export default function UploadModal({
       let finalImageUrl = imageUrl.trim();
 
       let uploadedPublicId = '';
-      // If user uploaded a local image file
+      const effectiveCategory = (!category || category === 'all') ? fallbackSideId : category;
+      const fileIsVideo = selectedFile?.type?.startsWith('video/') || false;
+      let resourceType = fileIsVideo ? 'video' : 'image';
+
+      // If user uploaded a local image or video file
       if (selectedFile) {
         if (cloudinaryReady) {
           setStatusText('Uploading to Cloudinary...');
-          const uploadRes = await uploadImageToCloudinary(selectedFile, {
-            category,
-            title: title.trim()
-          });
-          finalImageUrl = (uploadRes.url || '').replace(/^http:\/\//i, 'https://');
-          uploadedPublicId = uploadRes.publicId || '';
+          try {
+            const uploadRes = await uploadImageToCloudinary(selectedFile, {
+              category: effectiveCategory,
+              title: title.trim(),
+              projectId
+            });
+            finalImageUrl = (uploadRes.url || '').replace(/^http:\/\//i, 'https://');
+            uploadedPublicId = uploadRes.publicId || '';
+            resourceType = uploadRes.resourceType || resourceType;
+          } catch (cldErr) {
+            console.warn('Cloudinary upload issue, saving locally:', cldErr);
+            setStatusText('Processing local file...');
+            finalImageUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (event) => resolve(event.target.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(selectedFile);
+            });
+          }
         } else {
           // Fallback to base64 if Cloudinary is not configured yet
-          setStatusText('Processing local image...');
+          setStatusText('Processing local file...');
           finalImageUrl = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (event) => resolve(event.target.result);
@@ -156,21 +185,23 @@ export default function UploadModal({
       setStatusText('Saving reference...');
       const finalTitle =
         title.trim() ||
-        `${category.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
+        `${effectiveCategory.toUpperCase()} Reference #${Math.floor(Math.random() * 900 + 100)}`;
 
       await onAddReference({
         id: uploadedPublicId
           ? `cld-${uploadedPublicId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
           : `ref-${Date.now()}`,
+        projectId: projectId || undefined,
         publicId: uploadedPublicId,
         title: finalTitle,
-        category,
+        category: effectiveCategory,
         imageUrl: finalImageUrl.replace(/^http:\/\//i, 'https://'),
+        resourceType,
         sourceUrl: sourceUrl.trim() || '',
-        deviceType: category === 'driver' ? 'Mobile' : 'Desktop',
+        deviceType: effectiveCategory === 'driver' ? 'Mobile' : 'Desktop',
         createdAt: new Date().toISOString(),
         isLocalUnsynced: true,
-        isCloudinarySource: cloudinaryReady
+        isCloudinarySource: Boolean(uploadedPublicId)
       });
 
       // Reset and close
@@ -221,50 +252,43 @@ export default function UploadModal({
         )}
 
         <form onSubmit={handleSubmit} className="upload-form">
-          {/* Pillar Selector */}
-          <div className="upload-field">
-            <label className="upload-label">Product Pillar</label>
-            <div className="upload-pillar-tabs">
-              <button
-                type="button"
-                className={`pillar-tab ${category === 'b2b' ? 'active' : ''}`}
-                onClick={() => setCategory('b2b')}
-                disabled={isSubmitting}
-              >
-                B2B Portal
-              </button>
-              <button
-                type="button"
-                className={`pillar-tab ${category === 'admin' ? 'active' : ''}`}
-                onClick={() => setCategory('admin')}
-                disabled={isSubmitting}
-              >
-                Admin Console
-              </button>
-              <button
-                type="button"
-                className={`pillar-tab ${category === 'driver' ? 'active' : ''}`}
-                onClick={() => setCategory('driver')}
-                disabled={isSubmitting}
-              >
-                Driver App
-              </button>
+          {/* Project Side Selector */}
+          {projectSides && projectSides.length > 0 && (
+            <div className="upload-field">
+              <label className="upload-label">Project Side / Pillar</label>
+              <div className="upload-pillar-tabs">
+                {projectSides.map((side) => (
+                  <button
+                    key={side.id}
+                    type="button"
+                    className={`pillar-tab ${category === side.id ? 'active' : ''}`}
+                    onClick={() => setCategory(side.id)}
+                    disabled={isSubmitting}
+                  >
+                    {side.name}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Image Input Area (File Drop or URL) */}
+          {/* Media Input Area (File Drop or URL) */}
           <div className="upload-field">
-            <label className="upload-label">UI Screenshot</label>
+            <label className="upload-label">UI Screenshot or Video</label>
 
             {previewUrl || imageUrl ? (
               <div className="image-preview-box">
-                <img src={previewUrl || imageUrl} alt="Preview" className="preview-img" />
+                {selectedFile?.type?.startsWith('video/') ? (
+                  <video src={previewUrl} className="preview-img" autoPlay muted loop playsInline />
+                ) : (
+                  <img src={previewUrl || imageUrl} alt="Preview" className="preview-img" />
+                )}
                 <button
                   type="button"
                   onClick={handleClearImage}
                   disabled={isSubmitting}
                   className="remove-img-btn"
-                  title="Remove image"
+                  title="Remove media"
                 >
                   <X size={13} />
                   <span>Replace</span>
@@ -290,17 +314,17 @@ export default function UploadModal({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   style={{ display: 'none' }}
                   onChange={(e) => e.target.files && handleFileUpload(e.target.files[0])}
                   disabled={isSubmitting}
                 />
                 <UploadCloud size={24} className="dropzone-icon" />
-                <p className="dropzone-text">Click to choose image or drag & drop</p>
+                <p className="dropzone-text">Click to choose image or video, or drag & drop</p>
                 <span className="dropzone-sub">
                   {cloudinaryReady
                     ? 'Uploaded directly to Cloudinary CDN'
-                    : 'PNG, JPG, WebP supported'}
+                    : 'PNG, JPG, WebP, MP4, WebM supported'}
                 </span>
               </div>
             )}
