@@ -16,12 +16,29 @@ export const verifyToken = (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    const user = db.findUserById(decoded.id);
+    let user = db.findUserById(decoded.id);
     if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'User not found or session expired.'
-      });
+      if (decoded.id && (decoded.email || decoded.name)) {
+        // Auto-rehydrate verified user from cryptographically verified token on serverless cold starts
+        user = {
+          id: decoded.id,
+          name: decoded.name || (decoded.email ? decoded.email.split('@')[0] : 'Member'),
+          email: decoded.email || '',
+          avatar: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(decoded.name || decoded.email || 'Member')}&backgroundColor=5856d6,0a8491,248a3d,ea580c`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        try {
+          db.createUser(user);
+        } catch {
+          // Ignore write collision
+        }
+      } else {
+        return res.status(401).json({
+          success: false,
+          error: 'User not found or session expired.'
+        });
+      }
     }
 
     // Attach user without password hash
@@ -95,7 +112,11 @@ export const requireProjectLead = (req, res, next) => {
     return res.status(404).json({ success: false, error: 'Project not found.' });
   }
 
-  if (project.leadId !== req.user.id) {
+  const isLead =
+    project.leadId === req.user.id ||
+    (project.leadEmail && project.leadEmail.toLowerCase() === req.user.email?.toLowerCase());
+
+  if (!isLead) {
     return res.status(403).json({
       success: false,
       error: 'Permission denied: This action requires Project Lead permissions.'

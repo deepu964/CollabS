@@ -56,8 +56,17 @@ class ProjectService {
 
       const data = await res.json();
       if (data.success && Array.isArray(data.projects)) {
-        localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(data.projects));
-        return { success: true, projects: data.projects };
+        let finalProjects = data.projects;
+        try {
+          const cached = JSON.parse(localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE) || '[]');
+          const serverIds = new Set(data.projects.map((p) => p.id));
+          const missing = cached.filter((p) => p && p.id && !serverIds.has(p.id));
+          finalProjects = [...data.projects, ...missing];
+        } catch {
+          // ignore
+        }
+        localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(finalProjects));
+        return { success: true, projects: finalProjects };
       }
       return { success: false, projects: [] };
     } catch (err) {
@@ -89,6 +98,16 @@ class ProjectService {
           success: false,
           error: data.error || 'Failed to create project.'
         };
+      }
+
+      if (data.project) {
+        try {
+          const cached = JSON.parse(localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE) || '[]');
+          const updated = [data.project, ...cached.filter((p) => p && p.id !== data.project.id)];
+          localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(updated));
+        } catch {
+          // ignore
+        }
       }
 
       return {
