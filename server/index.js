@@ -50,11 +50,17 @@ app.use((req, res, next) => {
 // Start Server (only when running as standalone Node process, not in Vercel Serverless)
 if (!process.env.VERCEL) {
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CollabS Backend] Server running on http://localhost:${PORT}`);
+    console.log(`[CollabS Backend] Server running on http://127.0.0.1:${PORT} (http://localhost:${PORT})`);
   });
 
   server.on('error', (err) => {
-    console.error('[CollabS Backend] Server error:', err);
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n[CollabS Backend] FATAL: Port ${PORT} is already in use by another process.`);
+      console.error(`[CollabS Backend] Run 'Stop-Process -Name node -Force' in PowerShell to free it, or change PORT in .env.\n`);
+    } else {
+      console.error('[CollabS Backend] Server error:', err);
+    }
+    process.exit(1);
   });
 }
 

@@ -4,10 +4,40 @@ const STORAGE_KEY_ACTIVE_PROJECT = 'collabs_active_project_v2';
 const STORAGE_KEY_PROJECTS_CACHE = 'collabs_projects_cache_v2';
 
 class ProjectService {
+  getCacheKey() {
+    const user = authService.getCurrentUser();
+    return user?.id ? `collabs_projects_cache_v2_${user.id}` : STORAGE_KEY_PROJECTS_CACHE;
+  }
+
   getActiveProject() {
     try {
+      const user = authService.getCurrentUser();
+      if (!user) return null;
+
       const raw = localStorage.getItem(STORAGE_KEY_ACTIVE_PROJECT);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const project = JSON.parse(raw);
+        if (project) {
+          const cleanEmail = user.email ? user.email.trim().toLowerCase() : null;
+          const isLead =
+            project.leadId === user.id ||
+            (cleanEmail && project.leadEmail && project.leadEmail.trim().toLowerCase() === cleanEmail);
+          const isMember =
+            Array.isArray(project.members) &&
+            project.members.some(
+              (m) =>
+                m.userId === user.id ||
+                (cleanEmail && m.email && m.email.trim().toLowerCase() === cleanEmail)
+            );
+
+          if (isLead || isMember) {
+            return project;
+          }
+          // The cached active project belongs to a different user! Clear it!
+          this.clearActiveProject();
+          return null;
+        }
+      }
     } catch {
       // ignore
     }
@@ -56,23 +86,16 @@ class ProjectService {
 
       const data = await res.json();
       if (data.success && Array.isArray(data.projects)) {
-        let finalProjects = data.projects;
-        try {
-          const cached = JSON.parse(localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE) || '[]');
-          const serverIds = new Set(data.projects.map((p) => p.id));
-          const missing = cached.filter((p) => p && p.id && !serverIds.has(p.id));
-          finalProjects = [...data.projects, ...missing];
-        } catch {
-          // ignore
-        }
-        localStorage.setItem(STORAGE_KEY_PROJECTS_CACHE, JSON.stringify(finalProjects));
-        return { success: true, projects: finalProjects };
+        const cacheKey = this.getCacheKey();
+        localStorage.setItem(cacheKey, JSON.stringify(data.projects));
+        return { success: true, projects: data.projects };
       }
       return { success: false, projects: [] };
     } catch (err) {
       console.warn('[ProjectService] Fetch projects fallback to cache:', err);
       try {
-        const cached = localStorage.getItem(STORAGE_KEY_PROJECTS_CACHE);
+        const cacheKey = this.getCacheKey();
+        const cached = localStorage.getItem(cacheKey);
         if (cached) {
           return { success: true, projects: JSON.parse(cached), isOffline: true };
         }

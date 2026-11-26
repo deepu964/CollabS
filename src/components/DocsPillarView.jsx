@@ -78,11 +78,26 @@ CollabS is a real-time collaborative operations platform connecting wholesale en
   }
 ];
 
-export default function DocsPillarView({ onBackToOverview }) {
+export default function DocsPillarView({ onBackToOverview, activeProject }) {
+  const isHired =
+    activeProject?.id === 'prj_hired_platform' ||
+    activeProject?.id === 'prj_collabs_b2b_platform' ||
+    activeProject?.name?.toUpperCase().includes('HIRE') ||
+    activeProject?.name?.toLowerCase().includes('b2b');
+
+  const projectDocsKey = activeProject?.id
+    ? `collabs_docs_library_v2_${activeProject.id}`
+    : STORAGE_KEY;
+
+  const baselineDocs = isHired ? INITIAL_DOCS : [];
+
   const [docs, setDocs] = useState(() => {
     try {
       const deletedSet = getDeletedDocIds();
-      const saved = localStorage.getItem(STORAGE_KEY);
+      let saved = localStorage.getItem(projectDocsKey);
+      if (!saved && isHired) {
+        saved = localStorage.getItem(STORAGE_KEY);
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
@@ -98,7 +113,7 @@ export default function DocsPillarView({ onBackToOverview }) {
       console.warn('Failed to parse saved docs', e);
     }
     const initialDeleted = getDeletedDocIds();
-    return INITIAL_DOCS.filter((d) => !initialDeleted.has(d.id));
+    return baselineDocs.filter((d) => !initialDeleted.has(d.id));
   });
 
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -198,11 +213,11 @@ export default function DocsPillarView({ onBackToOverview }) {
   // Sync docs to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
+      localStorage.setItem(projectDocsKey, JSON.stringify(docs));
     } catch (e) {
       console.error('Failed to save docs', e);
     }
-  }, [docs]);
+  }, [docs, projectDocsKey]);
 
   // Handle ESC key to close full-size details modal
   useEffect(() => {

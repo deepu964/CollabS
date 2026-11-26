@@ -76,7 +76,9 @@ export const requireProjectAccess = (req, res, next) => {
     return res.status(404).json({ success: false, error: 'Project not found.' });
   }
 
-  const isLead = project.leadId === req.user.id;
+  const isLead =
+    project.leadId === req.user.id ||
+    (project.leadEmail && project.leadEmail.toLowerCase() === req.user.email?.toLowerCase());
   const isMember =
     Array.isArray(project.members) &&
     project.members.some(

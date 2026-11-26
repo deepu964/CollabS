@@ -183,16 +183,21 @@ export default function App() {
 
     projectService.fetchProjects().then((res) => {
       if (res.success && Array.isArray(res.projects)) {
+        if (res.projects.length === 0) {
+          // User has no projects: clean slate, open creation modal
+          setActiveProject(null);
+          projectService.clearActiveProject();
+          setIsProjectModalOpen(true);
+          return;
+        }
+
         const saved = projectService.getActiveProject();
         const exists = saved && res.projects.find((p) => p.id === saved.id);
         if (exists) {
           setActiveProject(exists);
-        } else if (res.projects.length > 0) {
+        } else {
           setActiveProject(res.projects[0]);
           projectService.setActiveProject(res.projects[0]);
-        } else {
-          // Open modal to prompt project creation
-          setIsProjectModalOpen(true);
         }
       }
     });
@@ -294,24 +299,16 @@ export default function App() {
       const curProj = projectService.getActiveProject();
       if (curProj?.id) {
         const key = getProjectRefsKey(curProj.id);
-        const saved = localStorage.getItem(key);
+        let saved = localStorage.getItem(key);
+        // Fallback to legacy shared storage if active project is HIRE_D platform
+        const isHired = curProj.id === 'prj_hired_platform' || curProj.id === 'prj_collabs_b2b_platform' || curProj.name?.toUpperCase().includes('HIRE') || curProj.name?.toLowerCase().includes('b2b');
+        if (!saved && isHired) {
+          saved = localStorage.getItem(STORAGE_KEY_REFS);
+        }
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed)) {
-            return parsed.filter((item) => {
-              if (!item || !item.id) return false;
-              if (DUMMY_IDS.has(item.id)) return false;
-              // Clean out old legacy demo images from past tests
-              if (item.publicId && (
-                item.publicId.startsWith('collabs/b2b/') ||
-                item.publicId.startsWith('collabs/admin/') ||
-                item.publicId.startsWith('collabs/driver/') ||
-                item.publicId.startsWith('collabs/docs/')
-              )) {
-                return false;
-              }
-              return true;
-            });
+            return parsed.filter((item) => item && item.id && !DUMMY_IDS.has(item.id));
           }
         }
         return [];
@@ -450,9 +447,17 @@ export default function App() {
 
               // Enforce project isolation: asset must belong specifically to this active project
               if (activeProject?.id) {
+                const isHiredPlatform =
+                  activeProject.id === 'prj_hired_platform' ||
+                  activeProject.id === 'prj_collabs_b2b_platform' ||
+                  activeProject.name?.toUpperCase().includes('HIRE') ||
+                  activeProject.name?.toLowerCase().includes('b2b');
+
                 const belongsToProject =
                   item.projectId === activeProject.id ||
-                  (item.publicId && item.publicId.includes(`collabs/${activeProject.id}/`));
+                  (item.publicId && item.publicId.includes(`collabs/${activeProject.id}/`)) ||
+                  (isHiredPlatform && (!item.projectId || item.publicId?.startsWith('collabs/')));
+
                 if (!belongsToProject) return false;
               }
               return true;
@@ -506,24 +511,16 @@ export default function App() {
     }
     try {
       const key = getProjectRefsKey(activeProject.id);
-      const saved = localStorage.getItem(key);
+      let saved = localStorage.getItem(key);
+      // Fallback to legacy shared storage if active project is HIRE_D platform
+      const isHired = activeProject.id === 'prj_hired_platform' || activeProject.id === 'prj_collabs_b2b_platform' || activeProject.name?.toUpperCase().includes('HIRE') || activeProject.name?.toLowerCase().includes('b2b');
+      if (!saved && isHired) {
+        saved = localStorage.getItem(STORAGE_KEY_REFS);
+      }
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          // Purge old legacy demo items so they never leak into this project
-          const cleaned = parsed.filter((item) => {
-            if (!item || !item.id) return false;
-            if (DUMMY_IDS.has(item.id)) return false;
-            if (item.publicId && (
-              item.publicId.startsWith('collabs/b2b/') ||
-              item.publicId.startsWith('collabs/admin/') ||
-              item.publicId.startsWith('collabs/driver/') ||
-              item.publicId.startsWith('collabs/docs/')
-            )) {
-              return false;
-            }
-            return true;
-          });
+          const cleaned = parsed.filter((item) => item && item.id && !DUMMY_IDS.has(item.id));
           setReferences(cleaned);
           return;
         }
@@ -984,6 +981,30 @@ export default function App() {
                 );
               })}
 
+              {/* Permanent Docs & PRD Pillar in Sidebar */}
+              <div className="sidebar-menu-divider" />
+              <button
+                type="button"
+                onClick={() => setActiveCategory('docs')}
+                className={`sidebar-menu-btn ${activeCategory === 'docs' ? 'active' : ''}`}
+                title="Project PRDs & Documentation Hub"
+              >
+                <div className="menu-btn-icon-box">
+                  <FileText size={15} />
+                </div>
+                <span className="menu-btn-title">Docs & PRD</span>
+                <span className="menu-btn-count">
+                  {(() => {
+                    try {
+                      const saved = localStorage.getItem('collabs_docs_library_v2');
+                      return saved ? JSON.parse(saved).length : 4;
+                    } catch {
+                      return 4;
+                    }
+                  })()}
+                </span>
+              </button>
+
               {currentUser && activeProject && (
                 <button
                   type="button"
@@ -1014,6 +1035,7 @@ export default function App() {
           /* VIEW 1: Inside Docs & PRD Hub */
           <DocsPillarView
             onBackToOverview={() => setActiveCategory('all')}
+            activeProject={activeProject}
           />
         ) : (
           /* VIEW 2: Inside the selected Category Area or All Resources directly */

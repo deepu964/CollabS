@@ -232,6 +232,10 @@ class AuthService {
 
     this.setToken(null);
     this.setCurrentUser(null);
+    try {
+      localStorage.removeItem('collabs_active_project_v2');
+      localStorage.removeItem('collabs_projects_cache_v2');
+    } catch {}
   }
 
   // Legacy helper for components during migration

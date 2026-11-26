@@ -16,5 +16,41 @@
     "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Deepak&backgroundColor=5856d6,0a8491,248a3d,ea580c",
     "createdAt": "2026-11-25T07:29:54.178Z",
     "updatedAt": "2026-11-25T07:29:54.178Z"
+  },
+  {
+    "id": "usr_1795603856233_yekl2s",
+    "name": "Deepak",
+    "email": "deepakmvbcr72@gmail.com",
+    "password": "$2b$10$mjCYy4gBYW0Pejl77tKer.sDrYL17ueiEK3Yeyoeaf4.lN60BCWW6",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Deepak&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-25T10:50:56.235Z",
+    "updatedAt": "2026-11-25T10:50:56.235Z"
+  },
+  {
+    "id": "usr_static_hired_team",
+    "name": "HIRE_D Team",
+    "email": "team@hired.com",
+    "password": "$2b$10$w6aenCa7X0aFREKBD7zaxeqOni5E/S3eMyyt03mWPmQ0.IE0mIvI6",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=HIRED&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-25T17:00:00.000Z",
+    "updatedAt": "2026-11-25T17:00:00.000Z"
+  },
+  {
+    "id": "usr_1795627679599_ee8uqw",
+    "name": "Dee",
+    "email": "team@gmail.com",
+    "password": "$2b$10$VGv9j5O3sRIPxZqeHbTGb.fuOaJ.LBnqhuAp8nFlxwU2aF6lQNlru",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Dee&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-25T17:27:59.601Z",
+    "updatedAt": "2026-11-25T17:27:59.601Z"
+  },
+  {
+    "id": "usr_1795683496343_9neziq",
+    "name": "Deepak",
+    "email": "team1@gmail.com",
+    "password": "$2b$10$9NoJ1EgghOF3QTRLl7JtCuO/cLzGXLgoHE1Sp5rL//SgXSuNKmk1m",
+    "avatar": "https://api.dicebear.com/7.x/initials/svg?seed=Deepak&backgroundColor=5856d6,0a8491,248a3d,ea580c",
+    "createdAt": "2026-11-26T08:58:16.343Z",
+    "updatedAt": "2026-11-26T08:58:16.343Z"
   }
 ]

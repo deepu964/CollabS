@@ -378,6 +378,64 @@ export async function fetchAllCloudinaryMedia() {
     console.debug('Cloudinary collabs tag fetch error:', err);
   }
 
+  // 2b. Query Cloudinary raw registry v2 (guaranteed to work without Resource list permission)
+  try {
+    const rawRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/raw/upload/collabs_global_media_registry_v2?t=${Date.now()}`);
+    if (rawRes.ok) {
+      const rawData = await rawRes.json();
+      if (Array.isArray(rawData?.references)) {
+        rawData.references.forEach((r) => {
+          if (!r || !r.id) return;
+          if (
+            globalDeletedSet.has(r.id) ||
+            (r.publicId && globalDeletedSet.has(r.publicId))
+          ) {
+            return;
+          }
+          if (!items.some((it) => it.id === r.id || (r.publicId && it.publicId === r.publicId))) {
+            items.push({
+              ...r,
+              isCloudinarySource: true
+            });
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.debug('Cloudinary raw registry fetch error:', err);
+  }
+
+  // 2c. Query tag lists for each pillar
+  for (const tag of ['b2b', 'admin', 'driver']) {
+    try {
+      const tagRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/image/list/${tag}.json?t=${Date.now()}`);
+      if (tagRes.ok) {
+        const data = await tagRes.json();
+        if (Array.isArray(data.resources)) {
+          data.resources.forEach((res) => {
+            if (res.width <= 10 && res.height <= 10) return;
+            if (res.public_id && res.public_id.includes('collabs/deleted/')) return;
+            const rawPublicId = res.public_id;
+            const cleanId = `cld-${rawPublicId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+            if (globalDeletedSet.has(rawPublicId) || globalDeletedSet.has(cleanId)) return;
+            if (!items.some((it) => it.id === cleanId || it.publicId === rawPublicId)) {
+              items.push({
+                id: cleanId,
+                publicId: rawPublicId,
+                title: res.context?.custom?.caption || res.context?.custom?.title || `${tag.toUpperCase()} Reference`,
+                category: tag,
+                resourceType: 'image',
+                imageUrl: `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/v${res.version}/${res.public_id}.${res.format}`,
+                createdAt: res.created_at,
+                isCloudinarySource: true
+              });
+            }
+          });
+        }
+      }
+    } catch {}
+  }
+
   // 3. Also check video collabs tag list
   try {
     const vidRes = await fetch(`https://res.cloudinary.com/${CLOUD_NAME}/video/list/collabs.json?t=${Date.now()}`, {
